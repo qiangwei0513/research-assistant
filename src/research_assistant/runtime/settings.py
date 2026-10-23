@@ -6,6 +6,7 @@ from_env 不抛网关相关异常，以便 /health 在配置缺失时仍能返�
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -14,6 +15,10 @@ from typing import Literal
 
 from research_assistant.errors import ConfigError
 
+# 耦合约定：下面两组元组的第一个元素会被当作关键字参数解包进 GatewaySettings
+# （GatewaySettings(family=..., session_id=..., **challenge)），因此必须与 dataclass 字段名逐字相同；
+# 同时冲突分支用 challenge 组的键去索引 platform[k]，所以两组元组的键名也必须完全一致。
+# 改名时请同步修改两处，否则会退化成运行期 TypeError/KeyError。
 CHALLENGE_GROUP: tuple[tuple[str, str], ...] = (
     ("base_url", "CHALLENGE_LLM_BASE_URL"),
     ("api_key", "CHALLENGE_LLM_API_KEY"),
@@ -43,7 +48,7 @@ class GatewaySettings:
         return (
             f"GatewaySettings(family={self.family!r}, base_url={self.base_url!r}, "
             f"model={self.model!r}, api_key='***', "
-            f"session_id={'set' if self.session_id else None})"
+            f"session_id={('set' if self.session_id else None)!r})"
         )
 
     __str__ = __repr__
@@ -136,9 +141,10 @@ class Settings:
                 raise ConfigError(
                     f"RESEARCH_CASE_BUDGET_SECONDS must be a number, got {budget_raw!r}"
                 ) from None
-            if budget <= 0:
+            if not (math.isfinite(budget) and budget > 0):
                 raise ConfigError(
-                    f"RESEARCH_CASE_BUDGET_SECONDS must be positive, got {budget_raw!r}"
+                    f"RESEARCH_CASE_BUDGET_SECONDS must be a finite positive number, "
+                    f"got {budget_raw!r}"
                 )
 
         return cls(

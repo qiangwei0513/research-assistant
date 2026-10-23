@@ -63,6 +63,11 @@ def test_conflicting_groups_raise_config_error_without_leaking_values() -> None:
     message = str(excinfo.value)
     assert "sk-challenge" not in message
     assert "sk-platform" not in message
+    # 消息必须真的点名不一致的字段，否则空消息也能通过上面的「不泄漏」断言
+    assert "api_key" in message
+    assert "model" in message
+    # 两组 base_url 取值相同（都是 http://gw.invalid/v1），不应被列为 differing
+    assert "base_url" not in message
     assert settings.gateway is None
 
 
@@ -107,6 +112,29 @@ def test_api_key_never_appears_in_repr_or_str() -> None:
     assert "sk-challenge" not in repr(Settings.from_env(CHALLENGE))
 
 
+def test_session_id_never_appears_in_repr_or_str() -> None:
+    """session id 也是凭据侧标识，掩码必须覆盖 repr/str 与外层 Settings。"""
+    env = {**CHALLENGE, "CHALLENGE_SESSION_ID": "sess-secret-42"}
+    settings = Settings.from_env(env)
+    gw = settings.require_gateway()
+    # 值确实被读到了（否则下面的「不出现」断言是恒真的）
+    assert gw.session_id == "sess-secret-42"
+    assert "sess-secret-42" not in repr(gw)
+    assert "sess-secret-42" not in str(gw)
+    assert "sess-secret-42" not in repr(settings)
+    assert "sess-secret-42" not in str(settings)
+    # 掩码写成带引号的字符串 'set'，不能裸写成内建类型名 set
+    assert "session_id='set'" in repr(gw)
+    assert "session_id='set'" in str(gw)
+
+
+def test_session_id_is_rendered_as_none_when_absent() -> None:
+    gw = Settings.from_env(CHALLENGE).require_gateway()
+    assert gw.session_id is None
+    assert "session_id=None" in repr(gw)
+    assert "session_id='set'" not in repr(gw)
+
+
 def test_workspace_and_team_defaults() -> None:
     settings = Settings.from_env(CHALLENGE)
     assert settings.team == ""
@@ -139,15 +167,116 @@ def test_non_positive_budget_is_rejected() -> None:
         Settings.from_env(env)
 
 
+def test_negative_budget_is_rejected() -> None:
+    env = {**CHALLENGE, "RESEARCH_CASE_BUDGET_SECONDS": "-5"}
+    with pytest.raises(ConfigError, match="RESEARCH_CASE_BUDGET_SECONDS"):
+        Settings.from_env(env)
+
+
 def test_non_numeric_budget_is_rejected() -> None:
     env = {**CHALLENGE, "RESEARCH_CASE_BUDGET_SECONDS": "abc"}
     with pytest.raises(ConfigError, match="RESEARCH_CASE_BUDGET_SECONDS"):
         Settings.from_env(env)
 
 
-def test_base_url_path_is_preserved_verbatim() -> None:
-    """不得裁剪或自猜补 /v1。"""
-    env = {**CHALLENGE, "CHALLENGE_LLM_BASE_URL": "http://gw.invalid:3000/custom/prefix/v1"}
-    assert Settings.from_env(env).require_gateway().base_url == (
-        "http://gw.invalid:3000/custom/prefix/v1"
-    )
+@pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "infinity", "1e400"])
+def test_non_finite_budget_is_rejected(raw: str) -> None:
+    """nan/inf 能通过 float()，且 nan 与任何数比较都为 False。
+
+    若只做 `budget <= 0` 校验，nan 会漏过去：Deadline.remaining() 返回 nan，
+    take() 的 `remaining < minimum` 恒为 False，整个每题限时守卫静默失效。
+    """
+    env = {**CHALLENGE, "RESEARCH_CASE_BUDGET_SECONDS": raw}
+    with pytest.raises(
+        ConfigError, match="RESEARCH_CASE_BUDGET_SECONDS must be a finite positive number"
+    ):
+        Settings.from_env(env)
+
+
+def test_finite_budget_is_accepted() -> None:
+    """守卫不得误伤合法值。"""
+    env = {**CHALLENGE, "RESEARCH_CASE_BUDGET_SECONDS": "0.5"}
+    assert Settings.from_env(env).case_budget_seconds == 0.5
+    env = {**CHALLENGE, "RESEARCH_CASE_BUDGET_SECONDS": "1e6"}
+    assert Settings.from_env(env).case_budget_seconds == 1e6
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://gw.invalid:3000/v1",
+        "http://gw.invalid:3000/v1/",
+        "http://gw.invalid:3000",
+        "http://gw.invalid/custom/prefix/v1",
+        "http://gw.invalid/custom/prefix/v1/",
+        "  http://gw.invalid:3000/v1  ",
+    ],
+)
+def test_base_url_path_is_preserved_verbatim(base_url: str) -> None:
+    """不得裁剪或自猜补 /v1；唯一的加工是 strip() 去掉首尾空白。"""
+    env = {**CHALLENGE, "CHALLENGE_LLM_BASE_URL": base_url}
+    assert Settings.from_env(env).require_gateway().base_url == base_url.strip()
+
+
+def test_from_env_without_argument_reads_os_environ(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """env=None → os.environ 分支（__main__ 的便捷路径；Task 10 显式传 os.environ）。"""
+    for name, value in {
+        **CHALLENGE,
+        "CHALLENGE_SESSION_ID": "sess-from-os-environ",
+        "RESEARCH_WORKSPACE_TEAM": "os-env-team",
+        "RESEARCH_WORKSPACE_ROOT": "/tmp/os-env-ws",
+        "RESEARCH_PAPERS_ROOT": "/tmp/os-env-papers",
+        "RESEARCH_CASE_BUDGET_SECONDS": "45",
+        "AGENTHACK_LOG_LEVEL": "DEBUG",
+    }.items():
+        monkeypatch.setenv(name, value)
+    # 避免宿主环境里恰好存在 PLATFORM_* 而触发「两组冲突」分支
+    for name in ("PLATFORM_LLM_URL", "PLATFORM_API_KEY", "PLATFORM_LLM_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = Settings.from_env()
+
+    gw = settings.require_gateway()
+    assert gw.family == "challenge"
+    assert gw.base_url == "http://gw.invalid/v1"
+    assert gw.model == "model-c"
+    assert gw.session_id == "sess-from-os-environ"
+    assert settings.gateway_config_error is None
+    assert settings.team == "os-env-team"
+    assert settings.workspace_root == Path("/tmp/os-env-ws")
+    assert settings.papers_root == Path("/tmp/os-env-papers")
+    assert settings.case_budget_seconds == 45.0
+    assert settings.log_level == "DEBUG"
+
+
+def test_from_env_without_argument_reports_missing_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一分支在配置缺失时也不抛网关异常，只写 gateway_config_error。"""
+    for name in (
+        "CHALLENGE_LLM_BASE_URL",
+        "CHALLENGE_LLM_API_KEY",
+        "CHALLENGE_LLM_MODEL",
+        "CHALLENGE_SESSION_ID",
+        "PLATFORM_LLM_URL",
+        "PLATFORM_API_KEY",
+        "PLATFORM_LLM_MODEL",
+        "RESEARCH_CASE_BUDGET_SECONDS",
+        "RESEARCH_WORKSPACE_TEAM",
+        "RESEARCH_WORKSPACE_ROOT",
+        "RESEARCH_PAPERS_ROOT",
+        "AGENTHACK_LOG_LEVEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.gateway is None
+    assert "CHALLENGE" in (settings.gateway_config_error or "")
+    assert settings.case_budget_seconds == 180.0
+    assert settings.workspace_root == Path("/output")
+    assert settings.papers_root == Path("/data/papers")
+    assert settings.log_level == "INFO"
+    assert settings.team == ""
