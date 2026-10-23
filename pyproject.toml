@@ -42,8 +42,9 @@ extend-exclude = ["docs/references", "work", ".venv", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
-# RUF002：中文文档字符串必然含全角标点，属该规则的已知误报，本项目为中文代码库
-ignore = ["E501", "RUF002"]
+# RUF001/RUF002/RUF003：中文文档字符串、注释与字符串字面量必然含全角标点，
+# 属 ambiguous-unicode 家族规则的已知误报；本项目为中文代码库，故整族忽略
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011"]
