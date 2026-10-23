@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import httpx
 
-from research_assistant.errors import GatewayError
+from research_assistant.errors import ConfigError, GatewayError
 from research_assistant.runtime.logging import BoundLogger, JsonLogger
 from research_assistant.runtime.settings import GatewaySettings
 
@@ -255,3 +255,23 @@ class FakeGateway:
             reasoning=None,
             raw={"fake": True, "content": item},
         )
+
+
+class UnavailableGateway:
+    """网关未配置时的占位实现。
+
+    让路由错误（501）先于配置错误（500）暴露，而不是在装配上下文时就失败。
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def complete(
+        self,
+        messages: Sequence[Message],
+        *,
+        context: SolveContext,
+        stage: str,
+        max_tokens: int | None = None,
+    ) -> GatewayResponse:
+        raise ConfigError(self.reason, case_id=context.case_id)
