@@ -4973,12 +4973,15 @@ def test_solve_routes_by_function_not_by_schema_ref(base_env: dict[str, str]) ->
 
 def test_solve_rejects_a_result_with_extra_fields(base_env: dict[str, str],
                                                  monkeypatch: pytest.MonkeyPatch) -> None:
-    from research_assistant.handlers import registry
+    """HANDLER_BY_FUNCTION 是 MappingProxyType，不能 setitem；改打 solve 模块内的名字。"""
+    from research_assistant import solve as solve_module
 
     task, context = context_for(base_env, chat_payload(), [model_json()])
-    monkeypatch.setitem(registry.HANDLER_BY_FUNCTION, task.function,
-                        lambda t, c: {"case_id": t.case_id, "answer": "a",
-                                      "clarifying_question": "q", "score": 5})
+
+    def bad_handler(t: Task, c: Any) -> dict[str, Any]:
+        return {"case_id": t.case_id, "answer": "a", "clarifying_question": "q", "score": 5}
+
+    monkeypatch.setattr(solve_module, "HANDLER_BY_FUNCTION", {task.function: bad_handler})
     with pytest.raises(TaskContractError, match="score"):
         solve(task, context)
 

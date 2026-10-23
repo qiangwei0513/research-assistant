@@ -27,3 +27,6 @@ work/
 
 # 官方材料与基础镜像位于本仓库之外（../赛题信息/、../agenthack-base-*.tar），
 # 只读保留，不纳入版本控制。gitignore 无法也不应引用父目录。
+
+# Superpowers SDD 工作区：本地 ledger 与评审包，不进版本控制
+.superpowers/
