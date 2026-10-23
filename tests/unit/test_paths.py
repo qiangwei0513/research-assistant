@@ -5,9 +5,11 @@ from pathlib import Path
 import pytest
 
 from research_assistant.errors import ConfigError, PathAuthorizationError
-from research_assistant.runtime.paths import WorkspacePaths
+from research_assistant.runtime.paths import IDEA_INFIX, SURVEY_INFIX, WorkspacePaths
 
 TEAM = "测试队伍 A+1"
+# 队名含正则元字符，用于持续验证 assert_own_expert_file 做了 re.escape
+META_TEAM = "队+A.B*C"
 
 
 @pytest.fixture
@@ -103,6 +105,98 @@ def test_assert_own_expert_file_rejects_other_team_report(ws: WorkspacePaths) ->
     foreign = ws.expert_dir / "C-01-综述-别的队.md"
     with pytest.raises(PathAuthorizationError):
         ws.assert_own_expert_file(foreign)
+
+
+def test_assert_own_expert_file_accepts_own_survey_and_idea(ws: WorkspacePaths) -> None:
+    """两种规范命名都必须被接受：锚定不能过紧。"""
+    survey = ws.survey_md("C-01")
+    idea = ws.idea_md("E-02")
+    survey.write_text("survey", encoding="utf-8")
+    idea.write_text("idea", encoding="utf-8")
+    assert ws.assert_own_expert_file(survey) == survey.resolve()
+    assert ws.assert_own_expert_file(idea) == idea.resolve()
+
+
+@pytest.mark.parametrize("infix", [SURVEY_INFIX, IDEA_INFIX])
+@pytest.mark.parametrize("prefix", ["ZZZZ", "X", "ZZ-99", "A-01-2", "A-01-综述-别的队"])
+def test_assert_own_expert_file_rejects_decoy_prefixes_in_shared_expert_dir(
+    ws: WorkspacePaths, infix: str, prefix: str
+) -> None:
+    """共享 expert/ 对他队可写；仅后缀相同不得被当作本队文件。"""
+    decoy = ws.expert_dir / f"{prefix}-{infix}-{TEAM}.md"
+    decoy.write_text("decoy planted by another team", encoding="utf-8")
+    with pytest.raises(PathAuthorizationError):
+        ws.assert_own_expert_file(decoy)
+
+
+@pytest.mark.parametrize("extra", [".evil", "x", "-2", ".md"])
+def test_assert_own_expert_file_rejects_extra_trailing_characters(
+    ws: WorkspacePaths, extra: str
+) -> None:
+    """文件名只是「包含」规范后缀、后面还挂了字符时同样拒绝（钉住 $ 锚点）。"""
+    forged = ws.expert_dir / f"C-01-{SURVEY_INFIX}-{TEAM}.md{extra}"
+    forged.write_text("forged", encoding="utf-8")
+    with pytest.raises(PathAuthorizationError):
+        ws.assert_own_expert_file(forged)
+
+
+def test_assert_own_expert_file_escapes_regex_metacharacters_in_team_name(
+    tmp_workspace: Path, papers_root: Path
+) -> None:
+    """队名里的 + . * 是正则元字符；未 re.escape 时本条会双向失败。"""
+    ws_meta = WorkspacePaths(root=tmp_workspace, team=META_TEAM, papers_root=papers_root)
+    own = ws_meta.survey_md("B-07")
+    own.write_text("own report", encoding="utf-8")
+    # 未转义时 `队+A.B*C` 无法匹配字面量 `队+A.B*C`，本队自己的报告反而被拒
+    assert ws_meta.assert_own_expert_file(own) == own.resolve()
+
+    idea = ws_meta.idea_md("B-07")
+    idea.write_text("own idea", encoding="utf-8")
+    assert ws_meta.assert_own_expert_file(idea) == idea.resolve()
+
+
+@pytest.mark.parametrize("lookalike_team", ["队AXC", "队队XBC", "队AABC"])
+def test_assert_own_expert_file_rejects_regex_lookalikes_of_the_team_name(
+    tmp_workspace: Path, papers_root: Path, lookalike_team: str
+) -> None:
+    """未转义的 `.`/`*`/`+` 会匹配这些形近队名，转义后必须全部拒绝。"""
+    ws_meta = WorkspacePaths(root=tmp_workspace, team=META_TEAM, papers_root=papers_root)
+    lookalike = ws_meta.expert_dir / f"B-07-{SURVEY_INFIX}-{lookalike_team}.md"
+    lookalike.write_text("lookalike", encoding="utf-8")
+    with pytest.raises(PathAuthorizationError):
+        ws_meta.assert_own_expert_file(lookalike)
+
+
+def test_material_with_nul_byte_is_rejected_as_authorization_error(ws: WorkspacePaths) -> None:
+    """NUL 字节必须映射成 403，而不是 pathlib 的 ValueError 冒到 HTTP 层变成 500。"""
+    with pytest.raises(PathAuthorizationError):
+        ws.paper("a\x00b.pdf")
+
+
+def test_symlink_inside_papers_root_to_other_team_report_is_rejected(
+    ws: WorkspacePaths, papers_root: Path, tmp_workspace: Path
+) -> None:
+    """papers_root 内部的符号链接指向他队报告时，paper() 仍必须拒绝。"""
+    other_dir = tmp_workspace / "data" / "别的队"
+    other_dir.mkdir(parents=True)
+    secret = other_dir / f"C-01-{SURVEY_INFIX}-别的队.md"
+    secret.write_text("other team survey", encoding="utf-8")
+    link = papers_root / "看起来像论文.pdf"
+    link.symlink_to(secret)
+    with pytest.raises(PathAuthorizationError):
+        ws.paper("看起来像论文.pdf")
+
+
+def test_nested_subdirectory_material_is_accepted(ws: WorkspacePaths, papers_root: Path) -> None:
+    """论文库内的合法多级子目录不得被误拒。"""
+    sub = papers_root / "子目录"
+    sub.mkdir()
+    nested = sub / "深度 学习+v2.pdf"
+    nested.write_text("body", encoding="utf-8")
+    resolved = ws.paper("子目录/深度 学习+v2.pdf")
+    assert resolved == nested.resolve()
+    assert resolved.name == "深度 学习+v2.pdf"
+    assert resolved.parent == sub.resolve()
 
 
 @pytest.mark.parametrize("team", ["", "  ", "a/b", "../evil", "a\\b"])
