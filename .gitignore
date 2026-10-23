@@ -1,0 +1,29 @@
+# 凭据与本地运行时配置：只运行时注入，永不提交
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+coverage.xml
+htmlcov/
+
+# 本地实验产物与模型生成源码：不是仓库内容
+work/
+/output/
+*.log
+
+# 官方材料与基础镜像位于本仓库之外（../赛题信息/、../agenthack-base-*.tar），
+# 只读保留，不纳入版本控制。gitignore 无法也不应引用父目录。
