@@ -1,0 +1,49 @@
+[project]
+name = "research-assistant"
+version = "0.1.0"
+description = "赛题一科研助手 Agent（objective-v3 / dispatch-v3）"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "fastapi==0.111.0",
+    "starlette==0.37.2",
+    "pydantic==2.8.0",
+    "uvicorn==0.30.0",
+    "httpx==0.27.0",
+    "anyio==4.15.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+    "ruff>=0.6,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/research_assistant"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -m 'not live'"
+markers = [
+    "live: 需要真实模型网关与网络，默认排除；设置 .env.local 后用 -m live 单独运行",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# 官方快照只读；work/ 内是模型生成源码，必须保持原样，不得被格式化
+# *.md：ruff >= 0.16 会格式化 Markdown 里的 Python 代码块，而本仓库的 md 全是文档/计划，
+# 其中代码是示意片段而非源码，不得被自动改写。
+extend-exclude = ["docs/references", "work", ".venv", "*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# RUF002：中文文档字符串必然含全角标点，属该规则的已知误报，本项目为中文代码库
+ignore = ["E501", "RUF002"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
