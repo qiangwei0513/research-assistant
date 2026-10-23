@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import FrozenInstanceError
 from typing import Any
 
 import pytest
@@ -156,8 +157,17 @@ def test_parse_does_not_mutate_the_incoming_payload() -> None:
     assert data == snapshot
 
 
-def test_task_is_hashable_and_frozen() -> None:
+def test_task_is_frozen() -> None:
     task = Task.parse(payload())
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         task.case_id = "B-01"  # type: ignore[misc]
-    assert hash(task) == hash(Task.parse(payload()))
+
+
+def test_task_is_hashable_even_with_nested_unknown_fields() -> None:
+    """unknown_fields 常含 dict/list 值；哈希不得因此抛 TypeError。"""
+    data = payload()
+    data["future_field"] = {"nested": 1}
+    data["tags"] = ["a", "b"]
+    task = Task.parse(data)
+    assert isinstance(hash(task), int)
+    assert len({task, Task.parse(data), Task.parse(payload())}) == 2
