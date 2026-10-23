@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import time
 from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, Protocol, TextIO
 
 REDACTED_KEYS: frozenset[str] = frozenset(
@@ -48,7 +50,8 @@ USAGE_COUNT_KEYS: frozenset[str] = frozenset(
 )
 REDACTED = "***"
 
-_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
+# 全局约束「禁止模块级可变状态」：用 MappingProxyType 冻结（仍支持 .get / []）。
+_LEVELS: Mapping[str, int] = MappingProxyType({"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40})
 
 
 class BoundLogger(Protocol):
@@ -144,7 +147,13 @@ class JsonLogger:
             line = json.dumps(record, ensure_ascii=False, default=str, sort_keys=False)
         except Exception:
             line = json.dumps({"level": level.lower(), "event": event, "unserialisable": True})
-        print(line, file=self._stream, flush=True)
+        # 写出同样在旁路守卫内：stream 损坏（已关闭/断管）时回落到 sys.__stderr__ 而非静默吞掉，
+        # 回落也失败才放弃该行——任何情况下都不把 I/O 异常抛回答题路径。
+        try:
+            print(line, file=self._stream, flush=True)
+        except Exception:
+            with contextlib.suppress(Exception):
+                print(line, file=sys.__stderr__, flush=True)
 
     def debug(self, event: str, **fields: Any) -> None:
         self._emit("DEBUG", event, fields)

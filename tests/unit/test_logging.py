@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 from dataclasses import asdict
 
 import pytest
@@ -243,4 +244,36 @@ def test_circular_bound_field_does_not_raise(stream: io.StringIO) -> None:
     cyclic["self"] = cyclic
     log = JsonLogger("test", stream=stream).bind(ctx=cyclic)
     log.info("evt")
-    assert read_lines(stream)[0]["event"] == "evt"
+    (record,) = read_lines(stream)
+    assert record["event"] == "evt"
+    assert record["unserialisable"] is True
+
+
+class _BrokenStream:
+    """write 必炸的流：模拟部署期 stream 被关闭/损坏。"""
+
+    def write(self, text: str) -> int:
+        raise ValueError("I/O operation on closed stream")
+
+    def flush(self) -> None:
+        raise ValueError("I/O operation on closed stream")
+
+
+def test_broken_stream_falls_back_to_stderr_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """日志是旁路：stream 写失败绝不能把 ValueError 抛回答题路径，而是回落到 sys.__stderr__。"""
+    fallback = io.StringIO()
+    monkeypatch.setattr(sys, "__stderr__", fallback, raising=False)
+    log = JsonLogger("test", stream=_BrokenStream())
+    log.info("evt", case_id="A-01")  # 不得抛出
+    assert "evt" in fallback.getvalue()
+
+
+def test_broken_stream_and_broken_fallback_still_do_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """连 sys.__stderr__ 也坏掉时，只能静默放弃该行——答题路径依旧不受影响。"""
+    monkeypatch.setattr(sys, "__stderr__", _BrokenStream(), raising=False)
+    log = JsonLogger("test", stream=_BrokenStream())
+    log.info("evt")  # 不得抛出
