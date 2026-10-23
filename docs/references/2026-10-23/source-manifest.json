@@ -1,0 +1,398 @@
+{
+  "retrieved_on": "2026-10-23",
+  "timezone": "Asia/Shanghai",
+  "method": "read-only unauthenticated HTTP GET; no platform evaluation run",
+  "online_sources": [
+    {
+      "file": "competition-rules.md",
+      "url": "http://8.149.132.48/api/v1/challenges/challenge-tbd/competition-rules",
+      "bytes": 9468,
+      "sha256": "6eba42de646959194a7dda7044c39dc77383bbfb4b004113d4f7b4bec3a4e06a",
+      "content_type": "text/markdown; charset=utf-8"
+    },
+    {
+      "file": "research-description.md",
+      "url": "http://8.149.132.48/api/v1/challenges/challenge-tbd/materials/research-description",
+      "bytes": 29701,
+      "sha256": "8de39e2b2370e808e345ee4feadf0a627df02886809f788f7e6cfe362650ce46",
+      "content_type": "text/markdown; charset=utf-8"
+    },
+    {
+      "file": "research-agent-spec.md",
+      "url": "http://8.149.132.48/api/v1/challenges/challenge-tbd/materials/research-agent-spec",
+      "bytes": 31677,
+      "sha256": "b33896572ea9979b148798e4487b85c48a4282a8b963ceb52dd2d3f12cd8a0e9",
+      "content_type": "text/markdown; charset=utf-8"
+    },
+    {
+      "file": "research-scoring-rules.md",
+      "url": "http://8.149.132.48/api/v1/challenges/challenge-tbd/materials/research-scoring-rules",
+      "bytes": 18844,
+      "sha256": "85976cacb85af37b3c1d910d9c1af55d68d9a8ed2244bdebf0718009c6fcccf6",
+      "content_type": "text/markdown; charset=utf-8"
+    },
+    {
+      "file": "challenge-detail.json",
+      "url": "http://8.149.132.48/api/v1/challenges/challenge-tbd",
+      "bytes": 3100,
+      "sha256": "4114b4ca4bd2bfa5873c123b19abdaa27a00538ddd9b0a261f1883ea409d278f",
+      "content_type": "application/json"
+    },
+    {
+      "file": "packages.json",
+      "url": "http://8.149.132.48/api/v1/challenges/challenge-tbd/packages",
+      "bytes": 1466,
+      "sha256": "55bc7e3f0dee649cf17faf15e3bdd83f39dbcee0ddcd9b621efa7fec1fb4e7b3",
+      "content_type": "application/json"
+    }
+  ],
+  "local_checks": {
+    "package_files": 54,
+    "case_manifest_entries": 27,
+    "public_fixtures": 13,
+    "mismatches": [],
+    "experiments_executed": false
+  },
+  "local_materials": [
+    {
+      "file": "赛题信息/FireShot Capture 050 - 赛题详情 · 全国高校 Agent 网络创新挑战赛 - [8.149.132.48].png",
+      "bytes": 1031401,
+      "sha256": "c1d638118f8c31fbf18c14201874fffccc00036d17c181b10e49f41af16cca02"
+    },
+    {
+      "file": "赛题信息/research-agent-spec.md",
+      "bytes": 35466,
+      "sha256": "6c61b17dbe80c40d1dd6da94005fd9d9acca1853c64e4e674dffe50a1e71034f"
+    },
+    {
+      "file": "赛题信息/research-description.md",
+      "bytes": 31768,
+      "sha256": "85e1b9f886cf9ce2d51bf5e5074549d13f4deb6a0ab1955ed2d5ec15ec22f987"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/Agent适配与源码来源要求.md",
+      "bytes": 5896,
+      "sha256": "b194560463419a01bf1fe5b89e060adf89ac9376e19bec38edd453c5858af450"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-01/artifacts.py",
+      "bytes": 3978,
+      "sha256": "a1356f56b78f67dec74f052770b2dea56ee2a92b995988170363ba55db90c9b3"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-01/experiment.agent.json",
+      "bytes": 166,
+      "sha256": "44b4dfa69d6555b9521e70a29188df4582320bb7311e468dbd660a8a60c245fe"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-01/experiment.py",
+      "bytes": 469,
+      "sha256": "6e3830ac54923873541111d8328563c008bb8344ea83845a5b6b597e38c94dca"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-01/font.py",
+      "bytes": 2053,
+      "sha256": "667c81973c1ebf2f96d14b30423bb764518341c23f19efe34215bc10b4611782"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-01/implementation.py",
+      "bytes": 108,
+      "sha256": "3b2188faa77c4fbdbf0346dfe7757c013cd62dec11bcd2a0dd3994457e071537"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-01/manifest.json",
+      "bytes": 890,
+      "sha256": "a7059f6e5feb4de921b7d94109b44b0fe46d581c64101b30b3061d6b1d75dd90"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-01/method.md",
+      "bytes": 1112,
+      "sha256": "ec0fb4012c7cf450ac3c4f887a3759d61b407875d2a57c9669dbd4690e85e369"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-01/protocol.json",
+      "bytes": 4034,
+      "sha256": "db47f63e721d1d8afcc94696cf3f55dc1effc46ee010a20b4acab5380721a27f"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-01/sample.json",
+      "bytes": 2241,
+      "sha256": "785095de78b08c5899a2ea77e639e5697abbfcbf2b75fd7f6d9d204985ee1d71"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-01/worker.py",
+      "bytes": 2790,
+      "sha256": "0ff2a5606a07501bdc1019046fe3f0c0b309bd245f6744da20c8675686d24403"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-02/artifacts.py",
+      "bytes": 3978,
+      "sha256": "a1356f56b78f67dec74f052770b2dea56ee2a92b995988170363ba55db90c9b3"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-02/experiment.agent.json",
+      "bytes": 166,
+      "sha256": "f9f21f2dd9f21098c5dc95d03971345d2ea5726527becc2d9bc22f1a8589fea3"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-02/experiment.py",
+      "bytes": 469,
+      "sha256": "fb903c9da32e4e81623a1d05fbf7fccebf6dcb1f105daeb2887b8ac61ee05bf1"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-02/font.py",
+      "bytes": 2053,
+      "sha256": "667c81973c1ebf2f96d14b30423bb764518341c23f19efe34215bc10b4611782"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-02/implementation.py",
+      "bytes": 108,
+      "sha256": "3b2188faa77c4fbdbf0346dfe7757c013cd62dec11bcd2a0dd3994457e071537"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-02/manifest.json",
+      "bytes": 890,
+      "sha256": "6707672d669e43d7994aeb04a778e5ff346e2e3068d6d904c9240a35bc7d8dfa"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-02/method.md",
+      "bytes": 2011,
+      "sha256": "86d56abd424be51cddbe43a1cd8ebddf05b2621622669e23c573cdb3afbf06ef"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-02/protocol.json",
+      "bytes": 5976,
+      "sha256": "a2d34db5bc7f4be1d67383d7ea9c485489f3f3d4819a4976c11908713acc9cfe"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-02/sample.json",
+      "bytes": 3730,
+      "sha256": "77d6816b8c434b3fe3dec60d486bdb2a7b284b3b60cb7fdf0e6423d2a9982cde"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-02/worker.py",
+      "bytes": 2790,
+      "sha256": "0ff2a5606a07501bdc1019046fe3f0c0b309bd245f6744da20c8675686d24403"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-05/artifacts.py",
+      "bytes": 3978,
+      "sha256": "a1356f56b78f67dec74f052770b2dea56ee2a92b995988170363ba55db90c9b3"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-05/experiment.agent.json",
+      "bytes": 166,
+      "sha256": "410ed514ca3a5340c9f384392cff19a1f896b74bc20b86199c0f80b2cbcd84a4"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-05/experiment.py",
+      "bytes": 469,
+      "sha256": "3770e1276bcffc294cfdb23a9d539fc97600196d359721ea2ecfdfac9161af7c"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-05/font.py",
+      "bytes": 2053,
+      "sha256": "667c81973c1ebf2f96d14b30423bb764518341c23f19efe34215bc10b4611782"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-05/implementation.py",
+      "bytes": 108,
+      "sha256": "3b2188faa77c4fbdbf0346dfe7757c013cd62dec11bcd2a0dd3994457e071537"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-05/manifest.json",
+      "bytes": 890,
+      "sha256": "44c211b2dab0c1c03dd2ec6e4527694ed3276d90cd9e794626b6fef88f5a38ce"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-05/method.md",
+      "bytes": 3126,
+      "sha256": "2f65b4e6377f5931b35ad513f2cd2fd1e26120efee2a1c3f65ed1482b1f7f7cf"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-05/protocol.json",
+      "bytes": 3556,
+      "sha256": "be9e991e5c950613fa0a566ce38bef00354c76d7a7419d4eb4a8a502ba990af5"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-05/sample.json",
+      "bytes": 471,
+      "sha256": "334547c62b8fe63e498596af0b37d7358bf55e40bba11692f6513dc93b622395"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D-05/worker.py",
+      "bytes": 2790,
+      "sha256": "0ff2a5606a07501bdc1019046fe3f0c0b309bd245f6744da20c8675686d24403"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D类实验要求.md",
+      "bytes": 4193,
+      "sha256": "ef1c1258bad1ee94bbcd8b163996616f0f68efc3344f5ac71fa95056224b4fe0"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/D类数据与图表判分规则.md",
+      "bytes": 4369,
+      "sha256": "ca7ff70a69cad4f6b0f2aa6a5f2337b2e01f42dc43ba33db06c9064d45aac498"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/PACKAGE_MANIFEST.json",
+      "bytes": 8729,
+      "sha256": "30edc49a19d63c6a5225c04d8c567d195dc271dbbbe1b5c626062a06e4c8425f"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/README.md",
+      "bytes": 4686,
+      "sha256": "b5a3c08e4b671d7c3552e0cf301d0dbec2872fdcf07e13a5652ad7048b828862"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/model_source.py",
+      "bytes": 2616,
+      "sha256": "99a75084042ceea3a5fecef9411be2bad5b07756a80bc69ec3bb4d3ee0a6781c"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/run_experiment.py",
+      "bytes": 4153,
+      "sha256": "309aa2a34dadcb628997cab5580e9744d878d0665fb5cb8ae909b684d753d57d"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-01/不均衡-重复词-标点.json",
+      "bytes": 5106,
+      "sha256": "e0d35396ea2190d39f244f38aa65d9eaf5eda4284d936aaa4b233df3d4dc952f"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-01/均衡-空文本-未知词.json",
+      "bytes": 4934,
+      "sha256": "903c29a3b0aaff99e1c67d4c0918ae402ef7a676917c042d2bab90ab20388d89"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-01.json",
+      "bytes": 7056,
+      "sha256": "03279d9c3c3aa19493a8ced4e4a24a1f5b56ec87bb6a348cb36c0402310381c2"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-02/rank-default.json",
+      "bytes": 7921,
+      "sha256": "69acb87696fddef7bbeb72588161448d31bcbe9948f54362e57c87d6c0c9d93d"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-02/空字段-重复未知词-不等组.json",
+      "bytes": 8351,
+      "sha256": "9abeac8825dd27e4efa12b324e1be9051ffa718ec0843af94cf7829d137ee67d"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-02.json",
+      "bytes": 10930,
+      "sha256": "4bdd498e693039dd35c3b6233db0f77edd03d0ec4fda22c5348092ef62c76b80"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-05/并发预留.json",
+      "bytes": 4811,
+      "sha256": "6ed49c6f8d77bda405d33ffb0f6231af998e8a7bcdc950bc654c9115d22e02cd"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-05/拒绝后同服务器重试.json",
+      "bytes": 4810,
+      "sha256": "237689ce42290f395439da172e8caa7f654ff4cbea64d5a3e7a0a90240845351"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-05/空任务与零服务流.json",
+      "bytes": 4327,
+      "sha256": "727be93a8ab074b516a0d4a4f5ec4b47cbb46ef456c077734bbbce1f5f662792"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-05/空闲间隔与流切换.json",
+      "bytes": 4652,
+      "sha256": "2d06603f38ccc0f8e79c67ffa110c033d88ae666c731894abd634e99779e5233"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-05/窗口恰好与超窗.json",
+      "bytes": 4651,
+      "sha256": "d8afd5a39752f3a5be93a88bacb2fe435584315b6e770e0968d59ec0f4da85d3"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-05/过期与同时到达.json",
+      "bytes": 4651,
+      "sha256": "cc31b0f2144284875065a43b8355169c1ae81099ee355277e54cf7ab0a819bc1"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/D-05.json",
+      "bytes": 4637,
+      "sha256": "a662823f75f929582675ec7d77e6aad50a1aeba738ca5ed9ccd19fae36f8c49d"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/公开样例请求/README.md",
+      "bytes": 1836,
+      "sha256": "0300bbae86c6849378dc3ecc0eafd2368efb9b3bb4af72697b6c2d728be114a2"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/参赛流程与文档导航.md",
+      "bytes": 3503,
+      "sha256": "f7f93b6297785628da36719b73467a694b2dbd641f5ae152cb1e05cd47f6d8fc"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/报错对照与测试清单.md",
+      "bytes": 5004,
+      "sha256": "2cbb41be4521bfaeff2ce8e0e83f0e005972bacc7492a4d959e1380fc9a6f5bf"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/版本说明.md",
+      "bytes": 2022,
+      "sha256": "276fb4a4ca6f709edcebfa636e428ef5d9c076a9a6da3d72d87dc97c955912b8"
+    },
+    {
+      "file": "赛题信息/research-experiments-20261020-source-v1/离线自测与平台运行指南.md",
+      "bytes": 12242,
+      "sha256": "64c67bb2bea9fa33aa5cbed6e2aa454a1786f52a8cd14d7253012bde2289b865"
+    },
+    {
+      "file": "赛题信息/research-scoring-rules.md",
+      "bytes": 20967,
+      "sha256": "ab15eb2d596f88824120c630b2864138d3a03f9ee50b552ea7b00c26875a7697"
+    }
+  ],
+  "base_image": {
+    "file": "agenthack-base-1.1.1.tar",
+    "bytes": 175757824,
+    "sha256": "57ce57fff6836a60e48954715d94db1142d1a8dbd1cbed77e014fc95da07f7d2",
+    "tags": [
+      "agenthack/base:1.1.1"
+    ],
+    "config_member": "blobs/sha256/4607fc67234b3005c3b09b0bdbb5cdd435df59bbcbfc74db902bb6c7a97d5fd4",
+    "config_sha256": "4607fc67234b3005c3b09b0bdbb5cdd435df59bbcbfc74db902bb6c7a97d5fd4",
+    "os": "linux",
+    "architecture": "amd64",
+    "user": "agent",
+    "working_dir": "/app",
+    "cmd": [
+      "sh",
+      "-c",
+      "echo 'ERROR: 选手必须覆盖 CMD 指令以启动自己的智能体服务。请检查 Dockerfile。' && exit 1"
+    ],
+    "exposed_ports": {
+      "8080/tcp": {}
+    },
+    "healthcheck": {
+      "Test": [
+        "CMD-SHELL",
+        "curl -fsS http://localhost:8080/health > /dev/null || exit 1"
+      ],
+      "Interval": 5000000000,
+      "Timeout": 3000000000,
+      "StartPeriod": 10000000000,
+      "Retries": 6
+    },
+    "verification": "archive metadata only; image not loaded or run",
+    "declared_environment": [
+      "PYTHON_VERSION=3.11.16",
+      "AGENTHACK_SDK_VERSION=1.1.1"
+    ]
+  },
+  "online_bundle": {
+    "url": "http://8.149.132.48/api/v1/challenges/challenge-tbd/materials/research-experiments",
+    "bytes": 88147,
+    "sha256": "4470ac3f4245ed8374dc6df7599549d6391468144b12c5762dcd1c3b89978739",
+    "files": 55,
+    "local_byte_mismatches": [],
+    "saved": false
+  }
+}

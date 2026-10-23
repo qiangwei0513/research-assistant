@@ -1,46 +1,37 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Start Here
 
-This workspace contains research-agent specifications and a reference experiment bundle; a complete Agent service is not yet present.
+Read [开发规范与Agent接力](docs/开发规范与Agent接力.md) and [开发进度与接力记录](docs/开发进度与接力记录.md) before implementation. Record the task, owned files, dependencies, verification results, and next action in the handoff record. Distinguish proposed architecture from implemented behavior.
 
-- Root `research-description.md`, `research-agent-spec.md`, and `research-scoring-rules.md` describe tasks, interfaces, and scoring. `agenthack-base-1.1.1.tar` supplies the base container image archive.
-- `research-experiments-20261020-source-v1/` contains shared guides, `model_source.py` for source extraction, and the platform client `run_experiment.py`.
-- `D-01/`, `D-02/`, and `D-05/` contain methods, protocols, workers, plotting helpers, and placeholder implementations.
-- `公开样例请求/` contains public JSON fixtures and boundary cases; manifests record reference-file hashes.
+## Project Structure
 
-## Build, Test, and Development Commands
+`research-assistant/` is the Git repository. It currently contains documentation; application code, tests, dependency configuration, and Dockerfile are not implemented. Official materials are in sibling `../赛题信息/`; the base image is `../agenthack-base-1.1.1.tar`. Preserve both. Dated public-source snapshots and hashes live in `docs/references/2026-10-23/`.
 
-There is no application build configuration or dependency manifest. From the repository root:
+## Requirements and Version Control
 
-```sh
-cd research-experiments-20261020-source-v1
-python3 model_source.py --help
-python3 model_source.py --response /tmp/model-response.json --output /tmp/implementation.py
-```
+The verified baseline is `research-assistant-objective-v3`: 11 cases, A/B/C/D/E counts 1/3/2/3/2. Dispatch schema v3 uses a dictionary for `cases_per_category`. Read actual assigned IDs; never invent missing cases. Local v2 documents describing 25 cases are historical.
 
-The extraction command reads a saved complete model response, checks Python 3.9 syntax and the required entry point, and saves source without rewriting it.
+C/E scoring uses `ce-quality-v1`. D-01/D-02/D-05 use `layered-d-v3` with `d-model-source-v1` admission. Resolve historical clauses using the development document’s source matrix and current task materials. Save new rule snapshots separately when versions change.
 
-For offline execution, follow the Docker command in `离线自测与平台运行指南.md`, section 3: use Python 3.9/Linux AMD64, disabled networking, read-only materials, and a separately mounted implementation.
+## Development and Verification
 
-Only inside an authorized platform session:
+Current read-only commands, run from this repository:
 
 ```sh
-python /data/experiments/run_experiment.py --case D-05 --implementation /absolute/work/implementation.py
+git status --short
+python3 ../赛题信息/research-experiments-20261020-source-v1/model_source.py --help
+shasum -a 256 ../agenthack-base-1.1.1.tar
 ```
 
-## Coding Style & Naming Conventions
+No project build, lint, or test command exists yet. Python tooling and module layout are proposals in the development document. Add executable commands with the implementation that enables them; never report planned checks as passing. Keep static, local, image, and platform verification separate.
 
-Use four-space indentation, `snake_case` functions and variables, UTF-8, and descriptive names for new helper code. No formatter or linter is configured. Algorithms must use Python 3.9 standard-library APIs and expose `run_experiment(request)`. Keep stdout exclusively for JSON; send diagnostics to stderr. Preserve protocol keys and case identifiers exactly.
+## Coding and Runtime Rules
 
-## Testing Guidelines
+Use four-space Python indentation, type annotations, and descriptive `snake_case` names. Keep HTTP contracts, document processing, model access, paths, and persistence separate. Output only the prescribed JSON fields; preserve case IDs, exact metric names, and Markdown/file equality.
 
-No automated test framework or coverage threshold is configured. Run the relevant public fixture and boundary cases, including D-02 `rank-default.json` when changing retrieval behavior. Workers receive `stage`/`payload`; algorithms receive only `payload`. Validate schema, finite numbers, determinism with seed 42, and algorithm invariants. Placeholder implementations intentionally raise `NotImplementedError`; public checks do not establish official scores.
+D algorithms require Python 3.9 standard-library compatibility. Generate submission source through the current case’s Gateway and preserve it unchanged except permitted newline normalization. Repairs require a new complete model response. Exclude generated submission source from formatters. Use the platform-mounted experiment client; never fabricate metrics or credentials.
 
-## Commit & Pull Request Guidelines
+## Commits and Handoffs
 
-This snapshot has no Git metadata, so historical conventions cannot be inferred. Use concise imperative subjects, optionally scoped, such as `docs: clarify D-05 validation`. PRs should describe changes, affected cases, validation commands/results, and linked issues when applicable. Include example JSON or figures for output changes.
-
-## Reference Integrity & Configuration
-
-Keep distributed materials unchanged; store generated implementations separately. For D-class execution, follow the bundle’s newer source-provenance requirements over older root examples. Submit current-session Gateway-generated source unchanged; request repairs from the model. Never commit injected credentials or fabricate metrics, figures, or source receipts.
+The initial commit uses a `feat:` prefix. Prefer concise subjects such as `docs: clarify dispatch validation`. PRs should identify requirements, affected files, verification evidence, and remaining limitations. Before handing off, inspect existing changes and update the progress record. Never overwrite another contributor’s work, official materials, or valid experiment results with placeholders.
