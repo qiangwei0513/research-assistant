@@ -234,6 +234,15 @@ git commit -m "feat: scaffold research-assistant package and toolchain"
 
 ### Task 2: 异常层级与八字段 Task 合同
 
+> **⚠️ 本任务已实施完毕（commits 4989627..87b8389），下方 Step 5 / Step 7 的三处内容在实现与评审中被修正，已被取代。以 `src/research_assistant/contracts/task.py` 与 `tests/unit/test_task_contract.py` 的实际代码为准，勿照抄下方代码块。**
+>
+> 1. **`unknown_fields` 的可哈希性**：原稿用 `MappingProxyType` 存 `unknown_fields`，却又让测试断言 `Task` 可哈希——`mappingproxy` 不可哈希，两者不可能同时成立。实现者一度自写 24 行 `FrozenMapping` 绕过，评审判定其 `__hash__ = hash(frozenset(items))` 在值为 dict/list 时抛 `TypeError`（而 brief 自己的 `test_unrecognized_extension_fields...` 正好构造了 `{"nested": 1}`），且 `dict(data)` 只是浅冻结。**最终方案**：删掉自定义类，字段声明为 `unknown_fields: Mapping[str, Any] = field(hash=False)`（从 `dataclasses` 导入 `field`），`parse` 仍传 `MappingProxyType(unknown)`。`hash=False` 保留唯一必须成立的哈希不变量（相等对象哈希相等），`compare` 仍为 True 因此 `__eq__` 照常比较该字段。
+> 2. **测试拆分**：`test_task_is_hashable_and_frozen` 拆成 `test_task_is_frozen`（用 `dataclasses.FrozenInstanceError` 而非宽泛的 `Exception`）与 `test_task_is_hashable_even_with_nested_unknown_fields`（对含嵌套 dict 与 list 的 `unknown_fields` 求哈希，并断言 `len({task, Task.parse(data), Task.parse(payload())}) == 2`——若 `__eq__` 漏掉 `unknown_fields` 该集合会塌成 1，从而暴露回归）。因断言已收窄，`pyproject.toml` 的 `"tests/**"` per-file-ignores 保持 `["B011"]`，**不得**加入 `B017`。
+> 3. **错误消息截断**：所有回显调用方取值的消息一律截断到 64 字符（`repr(value)[:64]`），共三处：`case_id`、`function`、`output_schema_ref` 不匹配。截 `repr` 而非原值可同时挡住日志膨胀与换行注入。其余消息只插值模块常量与整数下标，无需处理。另在 `CASE_ID_PATTERN` 上方加注释说明「刻意宽松：放行 A-0/A-101/A-999，对照派题记录的精确题号校验是后续任务的职责」。
+>
+> 仍未修（已转 Task 10）：`TaskContractError` 各分支未传 `case_id=`，因此 422 响应体的 `case_id` 恒为 `null`。
+
+
 **Files:**
 - Create: `src/research_assistant/errors.py`
 - Create: `src/research_assistant/contracts/task.py`
