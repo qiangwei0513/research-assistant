@@ -7,8 +7,8 @@ from typing import Any
 import pytest
 
 from research_assistant.contracts.results import serialize_result
-from research_assistant.contracts.task import Task
-from research_assistant.errors import HandlerNotImplemented, TaskContractError
+from research_assistant.contracts.task import Task, TaskFunction
+from research_assistant.errors import TaskContractError
 from research_assistant.runtime.context import load_task_context
 from research_assistant.runtime.gateway import FakeGateway
 from research_assistant.runtime.settings import Settings
@@ -54,16 +54,29 @@ def test_solve_returns_the_chat_result(base_env: dict[str, str]) -> None:
     }
 
 
-def test_solve_routes_by_function_not_by_schema_ref(base_env: dict[str, str]) -> None:
-    payload = {
-        **chat_payload(),
-        "case_id": "D-01",
-        "function": "Reproduction",
-        "output_schema_ref": "Reproduction",
-    }
-    task, context = context_for(base_env, payload, [])
-    with pytest.raises(HandlerNotImplemented, match="P4"):
-        solve(task, context)
+def test_solve_routes_by_function_not_by_schema_ref(
+    base_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """路由必须看 function，不能看 output_schema_ref；两者不一致早在 Task.parse 就被拒。"""
+    from research_assistant import solve as solve_module
+
+    calls: list[str] = []
+
+    def sentinel(name: str):
+        def handler(t: Task, c: Any) -> dict[str, Any]:
+            calls.append(name)
+            return {"case_id": t.case_id, "answer": "a", "clarifying_question": "q"}
+
+        return handler
+
+    task, context = context_for(base_env, chat_payload(), [])
+    monkeypatch.setattr(
+        solve_module,
+        "HANDLER_BY_FUNCTION",
+        {task.function: sentinel("chat"), TaskFunction.IDEA: sentinel("idea")},
+    )
+    solve(task, context)
+    assert calls == ["chat"]
 
 
 def test_solve_rejects_a_result_with_extra_fields(

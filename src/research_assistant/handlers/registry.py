@@ -14,6 +14,7 @@ from research_assistant.contracts.task import Task, TaskFunction
 from research_assistant.errors import HandlerNotImplemented
 from research_assistant.handlers.chat import solve_chat
 from research_assistant.handlers.idea import solve_idea
+from research_assistant.handlers.reproduction import solve_reproduction
 from research_assistant.handlers.retrieval import solve_retrieval
 from research_assistant.handlers.survey import solve_survey
 
@@ -41,6 +42,6 @@ HANDLER_BY_FUNCTION: Mapping[TaskFunction, Handler] = MappingProxyType(
         TaskFunction.LITERATURE_RETRIEVAL: solve_retrieval,
         TaskFunction.SURVEY: solve_survey,
         TaskFunction.IDEA: solve_idea,
-        TaskFunction.REPRODUCTION: _pending(TaskFunction.REPRODUCTION, "P4"),
+        TaskFunction.REPRODUCTION: solve_reproduction,
     }
 )

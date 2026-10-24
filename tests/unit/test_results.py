@@ -196,7 +196,15 @@ def test_figures_must_be_relative_strings() -> None:
             "D-01",
             status="completed",
             metrics=three_metrics(),
-            figures=["/output/data/figure/team/a.png"],
+            figures=[
+                {
+                    "path": "/output/data/figure/team/a.png",
+                    "caption": "c",
+                    "x_label": "x",
+                    "y_label": "y",
+                    "legend": "l",
+                }
+            ],
         )
 
 

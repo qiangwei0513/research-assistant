@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from research_assistant.errors import PersistenceError
 
@@ -54,3 +57,20 @@ def write_text_verified(path: Path, text: str) -> bytes:
     if not isinstance(text, str):
         raise PersistenceError(f"{path.name} requires str, got {type(text).__name__}")
     return write_bytes_verified(path, text.encode("utf-8"))
+
+
+@dataclass(frozen=True)
+class PersistedResult:
+    """已由可信 helper 落盘的结果。
+
+    D 类的 run_experiment.py 自己把 submission 写到 data/<team>/<case_id>.json 并拷好图片。
+    官方要求「优先保留 helper 已保存的真实结果，后续解析失败不能用占位失败结果覆盖它」，
+    因此这类结果只回读校验、不重写；HTTP 响应直接返回 helper 写下的那份字节。
+
+    放在 persistence 而不是 solve，是为了让 handler 能引用它而不与
+    solve → registry → handler 形成循环导入。
+    """
+
+    payload: Mapping[str, Any]
+    data: bytes
+    path: Path

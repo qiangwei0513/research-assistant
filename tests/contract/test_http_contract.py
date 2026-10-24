@@ -196,39 +196,56 @@ def test_two_requests_are_independent(client: TestClient) -> None:
 # --- /solve 路由 ---
 
 
-@pytest.mark.parametrize(
-    ("case_id", "phase"),
-    [("D-01", "P4")],
-)
-def test_unimplemented_categories_route_and_report_501(
-    base_env: dict[str, str], case_id: str, phase: str
+def test_reproduction_without_mounted_materials_returns_a_legal_answer(
+    base_env: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """D 类材料缺失是 200 + materials_missing 合法答卷，不是 5xx，也不是空壳。"""
+    monkeypatch.setenv("RESEARCH_EXPERIMENT_ROOT", str(tmp_path / "no-experiments"))
+    data = payload("D-01")
+    data["input"] = (
+        "核心指标恰好三项：name=Macro-F1，unit=分数；name=Accuracy，unit=%；"
+        "name=运行时间，unit=秒。"
+    )
     with build_client(base_env, []) as test_client:
-        response = test_client.post("/solve", json=payload(case_id))
-    assert response.status_code == 501
-    body = response.json()["error"]
-    assert body["type"] == "HandlerNotImplemented"
-    assert body["case_id"] == case_id
-    assert phase in body["message"]
+        response = test_client.post("/solve", json=data)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == {"case_id", "status", "metrics", "figures"}
+    assert body["status"] == "materials_missing"
+    assert body["figures"] == []
+    assert [m["name"] for m in body["metrics"]] == ["Macro-F1", "Accuracy", "运行时间"]
+    assert [m["unit"] for m in body["metrics"]] == ["分数", "%", "秒"]
+    assert all(m["observed"] is None for m in body["metrics"])
+    assert all(m["relative_error"] is None for m in body["metrics"])
 
 
-def test_routing_error_precedes_config_error_when_gateway_missing(
-    base_env: dict[str, str],
+def test_report_category_without_gateway_reports_config_error(
+    base_env: dict[str, str], papers_root: Path
 ) -> None:
-    """没有网关时 D 类应报 501（未实现）而不是 500（配置缺失）——前者更有诊断价值。"""
+    """材料齐备但网关未配置时，C 类报 500 ConfigError，而不是返回伪装成功的空壳报告。"""
+    from tests.fixtures.papers import write_paper
+
+    name = "城市绿地遥感_2024.pdf"
+    write_paper(
+        papers_root,
+        name,
+        title="Remote Sensing of Urban Green Space",
+        body_paragraphs=["Sufficiently long body text so the document counts as usable."],
+    )
     env = {k: v for k, v in base_env.items() if not k.startswith("CHALLENGE_LLM")}
     with TestClient(create_app(Settings.from_env(env), gateway=None)) as test_client:
-        response = test_client.post("/solve", json=payload("D-01"))
-    assert response.status_code == 501
+        response = test_client.post("/solve", json=payload("C-01", materials=[name]))
+    assert response.status_code == 500, response.text
+    assert response.json()["error"]["type"] == "ConfigError"
 
 
-@pytest.mark.parametrize("case_id", ["C-01", "E-01"])
-def test_report_categories_without_materials_report_422_not_a_shell(
-    base_env: dict[str, str], case_id: str
+def test_report_category_without_materials_reports_422_before_touching_the_gateway(
+    base_env: dict[str, str],
 ) -> None:
-    """C/E 没有可用材料时必须报错，不得返回伪装成功的空壳报告。"""
-    with build_client(base_env, []) as test_client:
-        response = test_client.post("/solve", json=payload(case_id))
+    """材料校验先于模型调用：没有可用材料时是 422，且不消耗任何模型预算。"""
+    env = {k: v for k, v in base_env.items() if not k.startswith("CHALLENGE_LLM")}
+    with TestClient(create_app(Settings.from_env(env), gateway=None)) as test_client:
+        response = test_client.post("/solve", json=payload("C-01"))
     assert response.status_code == 422
     assert response.json()["error"]["type"] == "MaterialUnavailableError"
 
