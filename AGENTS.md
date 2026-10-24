@@ -6,7 +6,7 @@ Read [开发规范与Agent接力](docs/开发规范与Agent接力.md) and [开�
 
 ## Project Structure
 
-`research-assistant/` is the Git repository. It currently contains documentation; application code, tests, dependency configuration, and Dockerfile are not implemented. Official materials are in sibling `../赛题信息/`; the base image is `../agenthack-base-1.1.1.tar`. Preserve both. Dated public-source snapshots and hashes live in `docs/references/2026-10-23/`.
+`research-assistant/` is the Git repository. P1 application code, tests and `pyproject.toml` are implemented under `src/research_assistant/` and `tests/`; **there is still no Dockerfile and no image build**. Official materials are in sibling `../赛题信息/`; the base image is `../agenthack-base-1.1.1.tar`. Preserve both. Dated public-source snapshots and hashes live in `docs/references/2026-10-23/`. The approved P1 design and its task-by-task plan live in `docs/superpowers/specs/` and `docs/superpowers/plans/`.
 
 ## Requirements and Version Control
 
@@ -16,7 +16,18 @@ C/E scoring uses `ce-quality-v1`. D-01/D-02/D-05 use `layered-d-v3` with `d-mode
 
 ## Development and Verification
 
-Current read-only commands, run from this repository:
+Commands available since P1, run from this repository:
+
+```sh
+uv sync                      # 建立 Python 3.11 环境并装齐锁定依赖
+uv run pytest                # 单元/合同/集成测试；默认排除 live
+uv run pytest -m live        # 真实网关 A 类端到端，需要 .env.local 与网络
+uv run ruff check .          # 静态检查
+uv run ruff format --check . # 格式检查
+RESEARCH_WORKSPACE_ROOT=/tmp/ra RESEARCH_WORKSPACE_TEAM=smoke uv run python -m research_assistant
+```
+
+Read-only checks that remain valid:
 
 ```sh
 git status --short
@@ -24,13 +35,19 @@ python3 ../赛题信息/research-experiments-20261020-source-v1/model_source.py 
 shasum -a 256 ../agenthack-base-1.1.1.tar
 ```
 
-No project build, lint, or test command exists yet. Python tooling and module layout are proposals in the development document. Add executable commands with the implementation that enables them; never report planned checks as passing. Keep static, local, image, and platform verification separate.
+Runtime dependency versions are pinned to what the base image actually ships (`fastapi 0.111.0`, `starlette 0.37.2`, `pydantic 2.8.0`, `uvicorn 0.30.0`, `httpx 0.27.0`, `anyio 4.15.1`, Python 3.11), so the eventual image needs no `pip install`. `pytest` and `ruff` are dev-group only; a future Dockerfile must use `uv sync --no-dev`. The base image ships **no** PDF library, Pillow, matplotlib, OCR or scikit-learn — P2 must resolve that before parsing papers.
+
+Credentials live only in the gitignored `.env.local`, never in code, the image, result files or committed tests. There is still no Dockerfile and no image build: local test passes are not image verification and are not platform verification. Keep static, local, image, and platform verification separate.
 
 ## Coding and Runtime Rules
 
 Use four-space Python indentation, type annotations, and descriptive `snake_case` names. Keep HTTP contracts, document processing, model access, paths, and persistence separate. Output only the prescribed JSON fields; preserve case IDs, exact metric names, and Markdown/file equality.
 
 D algorithms require Python 3.9 standard-library compatibility. Generate submission source through the current case’s Gateway and preserve it unchanged except permitted newline normalization. Repairs require a new complete model response. Exclude generated submission source from formatters. Use the platform-mounted experiment client; never fabricate metrics or credentials.
+
+**Do not use the base image's `agenthack.AgentRuntime` or `BaseAgent` to serve this benchmark.** Its `/solve` implements the generic challenge contract — request `{task_id, task_type, input: dict, constraints: {timeout_ms}}`, response `{task_id, status, output, metadata}` — which conflicts with this benchmark's eight-field input (where `constraints` is a *string array*) and its requirement to return only the prescribed top-level fields. Requests would 422 and responses would carry forbidden extra keys. `api.py` builds its own FastAPI app and reuses only the SDK's `install_all_interceptors()` and `Telemetry.session()`, both behind an optional import that degrades to a no-op off-image. Note the SDK's LLM tracing records only *inside* a `Telemetry.session()` context, so installing interceptors alone captures nothing.
+
+Never serialize `Settings` or `GatewaySettings` with `dataclasses.asdict()` / `fields()`: that bypasses their masking `__repr__` and yields `api_key` in plaintext. The logger's redaction is key-based and cannot catch a secret interpolated into a message *string* — pass secrets as nothing at all.
 
 ## Commits and Handoffs
 

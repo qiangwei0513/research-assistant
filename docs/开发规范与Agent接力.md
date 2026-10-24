@@ -58,6 +58,7 @@
 | 模型配置 | 本地旧接入附录 `CHALLENGE_*`；新 D 示例 `PLATFORM_*` | 存在真实接入差异，见第 7.3 节；不能拼凑配置或擅用个人接口 |
 | 镜像目录 | 基础镜像默认 `/app` | 当前赛题交付工作目录 `/output`；应用代码可保留 `/app` |
 | 排名 | 旧文档描述完整初赛榜 | 当前公开详情仍称正式总分/排名等待复核与完整性规则冻结；不承诺已具备排名资格 |
+| HTTP 服务骨架 | 基础镜像预装 `agenthack_sdk 1.1.1`，其 `AgentRuntime` 自带 `/health`+`/solve` | **不得复用**：SDK 的 `/solve` 是通用赛题合同（`TaskRequest{task_id,task_type,input:dict,constraints:{timeout_ms}}` → `TaskResponse{task_id,status,output,metadata}`），与赛题一八字段输入（`constraints` 是**字符串数组**）和「只输出该类型允许的顶层字段」直接冲突，请求会 422、响应会多出禁用键。自建 FastAPI app，只复用 `install_all_interceptors()` 与 `Telemetry.session()`（可选导入，离镜像降级为 no-op） |
 
 注意：[S2] 同一文件保留历史 D 段落，必须继续读到末尾“当前D类协议：layered-d-v3”。不能取前面的 6/6/7 检查点、四函数或 12+8 描述覆盖末尾修订。`20261020-source-v1` 是材料版本，`layered-d-v3` 是算法版本，`d-model-source-v1` 是来源准入版本，三者不能混为一谈。
 
@@ -347,6 +348,12 @@ Dockerfile、pyproject.toml、依赖锁文件
 
 【设计】配置适配器选择一个经联调确认的完整变量组；缺失或两组冲突时报配置错误，不逐变量混合 fallback。保留平台 URL 的完整路径及会话标识；按实际协议传会话头。不能裁剪为自猜 `/v1`、使用个人 API、跨题复用会话或把所有环境变量打印出来。模型名、上下文上限、Token 配额不得硬编码为臆测值。
 
+【已实现·2026-10-23】`runtime/settings.py` 按上述规则实现：两组各自「必需变量全部非空」才算齐备；恰好一组齐备则用之；两组齐备且值相同用 `CHALLENGE`；两组齐备但值不同报 `ConfigError` 且**只列 differing 的字段名，不列值**；两组都不齐备则 `gateway=None` 并记 `gateway_config_error`。`from_env` 不因网关问题抛异常，以便 `/health` 保持 200（见第 7.4 节理由）；网关错误改由 `require_gateway()` 在解题时抛。预算 `RESEARCH_CASE_BUDGET_SECONDS` 必须是有限正数——`nan` 与任何值比较均为 False，只写 `> 0` 会让它漏过并使整层时间守卫静默失效。
+
+【已核对·2026-10-23 开发网关实测】负责人提供的开发网关为 OpenAI 兼容 Chat Completions：`GET {base_url}/models` 正常列出模型；`POST {base_url}/chat/completions`、`stream=false` 返回标准 `choices[0].message.content`、`choices[0].finish_reason`、`usage.{prompt_tokens,completion_tokens,total_tokens}` 与 `usage.prompt_tokens_details.cached_tokens`；`usage.completion_tokens_details` 可为 `null`；`message` 含 `reasoning` 字段（推理型模型，实现不得假定其缺失）；`system_fingerprint` 为 `vllm-0.23.0-tp4-dp8-ep-…`。**不带 `X-Session-ID` 也返回 200。** 一次 A 类完整解题实测约 9.2 秒、429 tokens。凭据只存于被 gitignore 的 `.env.local`，不进代码、镜像、结果文件与提交的测试。
+
+此实测**只回答开发网关**，不得外推为「平台一定不要求会话头」或「正式环境就是这套变量名」；Q01 仍未关闭。
+
 D helper 的 `RESEARCH_EXPERIMENT_CASE/URL/TOKEN`、`RESEARCH_LAYERED_D`、`RESEARCH_D_SOURCE_PROVENANCE` 是平台注入合同，正式环境由挂载客户端消费；本地假服务必须标为测试，不能冒充来源证明。
 
 ### 7.4 部署与故障处理
@@ -354,6 +361,14 @@ D helper 的 `RESEARCH_EXPERIMENT_CASE/URL/TOKEN`、`RESEARCH_LAYERED_D`、`RESE
 【要求/已确认】以 `agenthack/base:1.1.1` 构建 Linux/AMD64 镜像，非 root，声明 8080/tcp，实现 GET `/health` 与 POST `/solve`，工作目录 `/output`，所需依赖构建时预装。基础镜像默认 CMD 故意退出 1，必须覆盖；归档声明有 curl 健康检查。代码可放 `/app`，通过包安装或显式模块路径保证换工作目录后可导入。[S1][S6]
 
 【设计】健康检查只报告服务就绪，不触发付费模型请求或实验。异常分类为输入、材料、配置、模型、超时、算法、存储、平台证据问题；写脱敏日志，不扩展答案 Schema。B 的“无相关论文”与“解析失败”分开记录；A/C/E 失败不能返回伪装成功的空壳报告。
+
+【已实现·2026-10-23】`/health` 只在**输出根不可写**时返回 503，队伍标识或网关未注入仍返回 200，改由 body 的 `team_configured`/`gateway_configured` 分量报告，且不触发任何模型请求。理由：healthcheck 失败会让整轮评测根本起不来，代价远大于单题报配置错误。响应体形如 `{"status","version","rules_version","workspace_writable","workspace_root","team_configured","gateway_configured","dispatch_mounted"}`，字段属 Q03【待确认】，联调时按平台要求调整。
+
+`/solve` 的错误映射：`TaskContractError`/`DispatchValidationError`/`MaterialUnavailableError` 422、`PathAuthorizationError` 403、`ConfigError`/`PersistenceError` 500、`GatewayError` 502、`BudgetExhausted` 504、`HandlerNotImplemented` 501；错误体统一 `{"error":{"type","message","case_id"}}`，**只用于非 2xx**，不得混入答案 JSON。未预期异常只回类名不回消息。响应体直接复用落盘那份 bytes（FastAPI 默认 JSONResponse 会用不同分隔符重新序列化，做不到逐字节一致）。D 类的 `failed`/`materials_missing` 走 200 正常通道，不走错误通道。
+
+【已核对·2026-10-23 基础镜像只读检查】对 `agenthack-base-1.1.1.tar` 做归档级只读检查（未 `docker load`、未启动容器），逐层解析 OCI blob 与 whiteout 后得到最终生效版本：Python 3.11.16、`fastapi 0.111.0`、`starlette 0.37.2`、`pydantic 2.8.0`/`pydantic-core 2.20.0`、`uvicorn 0.30.0`、`httpx 0.27.0`（层 6 装的 0.28.1 被层 7 装 `openai 1.35.0` 时降级并 whiteout）、`httpcore 1.0.9`、`anyio 4.15.1`、`requests 2.32.0`、`numpy 1.26.4`、`pandas 2.2.2`、`tiktoken 0.14.0`、`orjson 3.12.0`、`langchain 0.2.0`/`langchain-openai 0.1.8`、`agenthack_sdk 1.1.1`；`pytest`/`ruff` **不存在**（只能作本地 dev 依赖）。镜像默认 `USER agent`、`WORKDIR /app`、`EXPOSE 8080`、`HEALTHCHECK` 为 `curl -fsS http://localhost:8080/health`（Interval 5s/Timeout 3s/StartPeriod 10s/Retries 6），默认 CMD 打印错误并 `exit 1`。
+
+**镜像中缺失且必须自行解决的能力**：任何 PDF 解析库（无 pypdf/pdfminer.six/PyMuPDF）、无 Pillow、无 matplotlib、无 OCR（pytesseract/tesseract）、无 scikit-learn。D 类图表由平台侧冻结实验容器生成，因此缺 matplotlib 不构成 D 类阻塞（待在 P4 用真实 helper 复核）；但 **B/C/E 读论文需要 PDF 解析，这是 P2 的前置阻塞项**，见第 12 节 N01。
 
 【待确认】`/health` 的响应体、A/B/C/E 异常 HTTP 状态、重复请求/并发行为、真实挂载与 UID 权限、线上可用自测隔离机制。建议本地默认一题一上下文，但不能声称平台已承诺跨请求共享缓存。所有类型先按严格预算设计；D 的 180 秒已有新版材料依据，其他类别精确超时需接入联调确认。
 
@@ -427,13 +442,15 @@ P1 先消除协议、路径和交付问题；P4 的来源准入尽早联调，�
 
 | ID | 未决项 | 何时必须确认 | 当前可继续的工作 |
 |---|---|---|---|
-| Q01 | 实际模型变量族、会话URL/请求头、模型名、Token/上下文限额 | 首次真实Gateway请求前 | 配置与假Gateway合同、源码保存测试 |
+| Q01 | 实际模型变量族、会话URL/请求头、模型名、Token/上下文限额。**2026-10-23 部分关闭**：开发网关实测为 OpenAI 兼容 vLLM、`stream=false` 返回标准 usage、不需要 `X-Session-ID`（见第 7.3 节）。正式环境的注入变量名、会话头要求与模型名仍未确认，不得外推 | 首次真实平台 Gateway 请求前 | 已完成：整组探测适配器 + 真实网关 A 类端到端（`uv run pytest -m live`） |
 | Q02 | 外部平台是否挂载dispatch，实际论文路径、稳定team与输出UID权限 | 镜像接入前 | 分离单题/dispatch模式；临时目录集成测试 |
 | Q03 | health体、非D失败HTTP合同、重试/并发及精确限时 | P1接口冻结/联调 | 类型、路径和正常响应测试；错误分类日志 |
 | Q04 | 正式论文、A/B/C/E任务与完整机器Schema、dispatch示例附件 | 真实任务验收前 | 自建带标签的开发fixture，不能当正式题 |
 | Q05 | 线上是否允许额外隔离自测，D正式全部阶段耗时 | D预算策略定稿前 | 开发机隔离Docker自测、fake helper超时测试 |
 | Q06 | 专家/Token折算、同分/latest-best、截止与上传/申诉限额、正式排名启用 | 发布/解读成绩前 | 完成功能与自动项质量，保留版本和评测证据 |
 | Q07 | 赛题详情 `timeslice_budget=300` 的单位与作用 | 使用该值分配预算前 | 不解释成300秒或Token额度；D按180秒新版要求 |
+| N01 | **镜像无任何 PDF 解析库、无 Pillow、无 OCR**（2026-10-23 只读检查确认）。P2 必须先决定：构建时 `pip install` 纯 Python 解析器（需构建机联网，依赖打进镜像）还是纯标准库自写解析 | **阻塞 P2** | P1 不涉及；可先按「解析器可替换适配器」预留接口，不锁定具体库 |
+| N02 | SDK telemetry 的 OTEL 端点由谁注入、平台是否真的消费这些 trace、是否影响 30% 专家/Token 复核 | 发布前 | 已做可降级实现：本地无 `agenthack` 包时全部入口 no-op，遥测失败绝不影响答案返回 |
 
 当前公开快照已足以确认 v3 题量、输出合同、C/E 分档和三道 D 规则。上述未决项不意味着要等待所有平台信息才开始模块开发；仅对依赖该信息的联调和最终交付保留限制。
 
