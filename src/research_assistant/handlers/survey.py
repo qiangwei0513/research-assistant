@@ -184,7 +184,12 @@ def _unavailable_survey(task: Task, context: SolveContext, report: Any) -> Mappi
 
 
 def solve_survey(task: Task, context: SolveContext) -> Mapping[str, Any]:
-    report = extract_documents(context.materials, context.workspace, context.log)
+    report = extract_documents(
+        context.materials,
+        context.workspace,
+        context.log,
+        time_budget_seconds=max(5.0, min(60.0, context.deadline.remaining() - 120)),
+    )
     # 首次也要显式传预算：否则与缩减后的调用不一致（一个用隐式默认、一个用变量），
     # 既不可观测也容易被误当成「缩减没生效」。
     pack = build_evidence_pack(

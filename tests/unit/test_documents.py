@@ -360,3 +360,11 @@ def test_build_pdf_produces_a_reader_multi_page_document() -> None:
     data = build_pdf(pages=[["First page text"], ["Second page text"], ["Third page text"]])
     assert data.startswith(b"%PDF-1.4")
     assert data.rstrip().endswith(b"%%EOF")
+
+
+def test_batch_extraction_stops_at_the_time_budget(
+    workspace: WorkspacePaths, paper_library: list[str]
+) -> None:
+    """整库很大时必须能提前收手：把时间留给模型与落盘，而不是解析到超时。"""
+    report = extract_documents(paper_library, workspace, time_budget_seconds=0)
+    assert not report.documents

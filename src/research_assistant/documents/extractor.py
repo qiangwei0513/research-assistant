@@ -10,6 +10,7 @@ pypdf 是纯 Python、零强制依赖，基础镜像不含任何 PDF 库，因�
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -296,17 +297,31 @@ def extract_documents(
     materials: Iterable[str],
     workspace: WorkspacePaths,
     log: BoundLogger | None = None,
+    *,
+    time_budget_seconds: float | None = None,
 ) -> ExtractionReport:
     """按 materials 批量解析。
 
     重名（仅大小写不同视为同一篇）记录到 duplicate_filenames，不重复解析；
     路径越界由 WorkspacePaths 抛 PathAuthorizationError；文件不存在记为 MISSING 并保留可见原因。
+    time_budget_seconds 是整批解析的上限：材料库很大时保证把时间留给模型与落盘。
     """
     documents: list[Document] = []
     seen: list[str] = []
     duplicates: list[str] = []
+    ordered = list(materials)
+    started = time.monotonic()
 
-    for material in materials:
+    for material in ordered:
+        if time_budget_seconds is not None and time.monotonic() - started >= time_budget_seconds:
+            if log is not None:
+                log.warning(
+                    "documents.time_budget_exhausted",
+                    parsed=len(documents),
+                    total=len(ordered),
+                    budget_seconds=time_budget_seconds,
+                )
+            break
         existing = dedupe_case_insensitive(material, seen)
         if existing is not None:
             duplicates.append(material)

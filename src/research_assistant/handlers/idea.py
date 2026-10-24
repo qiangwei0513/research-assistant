@@ -397,7 +397,12 @@ def _unavailable_idea(task: Task, context: SolveContext, report: Any) -> Mapping
 
 
 def solve_idea(task: Task, context: SolveContext) -> Mapping[str, Any]:
-    report = extract_documents(context.materials, context.workspace, context.log)
+    report = extract_documents(
+        context.materials,
+        context.workspace,
+        context.log,
+        time_budget_seconds=max(5.0, min(60.0, context.deadline.remaining() - 120)),
+    )
     # E 类是提方案，不像 C 类需要逐条引用的详尽证据；收紧证据包可显著缩短 prefill。
     # 实测 E 类生成耗时与输出长度强相关（60.9s/2809 字符 到 176.1s/4400 字符），
     # 而单题上限只有 180s，因此必须从输入侧压时间，而不能只靠提示词求模型写短。
