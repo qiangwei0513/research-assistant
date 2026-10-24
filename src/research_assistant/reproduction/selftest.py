@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from research_assistant.reproduction.invariants import check_invariants
 from research_assistant.reproduction.materials import CaseMaterials
 from research_assistant.runtime.logging import BoundLogger
 
@@ -145,7 +146,11 @@ def run_self_test(
     python: str | None = None,
     log: BoundLogger | None = None,
 ) -> SelfTestResult:
-    """在受限子进程里逐个跑自测用例。任一失败即整体失败，并带回可诊断的错误摘要。"""
+    """在受限子进程里逐个跑自测用例，并比对算法不变量。
+
+    任一用例运行失败、输出非法或违反不变量都算整体失败，并带回可诊断的错误摘要——
+    该摘要会回传给同一会话模型用于完整重生成。
+    """
     import time
 
     max_captured_output = 2000
@@ -153,6 +158,10 @@ def run_self_test(
         return SelfTestResult(True, 0, 0, None, (), 0.0)
 
     work_dir.mkdir(parents=True, exist_ok=True)
+    # runner 会 os.chdir 到 work_dir，因此传给子进程的路径必须都是绝对的，
+    # 否则相对路径会在 chdir 之后失效
+    implementation = Path(implementation).resolve()
+    work_dir = Path(work_dir).resolve()
     runner = work_dir / "_selftest_runner.py"
     interpreter = python or sys.executable
     started = time.monotonic()
@@ -219,6 +228,13 @@ def run_self_test(
             continue
         if not keys:
             keys = tuple(sorted(parsed))
+        # 结构合法不等于算法正确：再比对官方 method 的不变量。
+        # 实测发现模型生成过「并列类别未取字典序最小」与「任务重复进入 trace/dropped」
+        # 这类错误，两者都能通过来源准入与结构检查，只有不变量能拦住。
+        violations = check_invariants(str(case.payload.get("case_id", "")), case.payload, parsed)
+        if violations:
+            first_error = first_error or f"{case.name}: " + "；".join(violations[:2])
+            continue
         passed += 1
 
     duration = time.monotonic() - started
