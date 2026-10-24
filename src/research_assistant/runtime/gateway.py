@@ -16,6 +16,7 @@ import httpx
 from research_assistant.errors import ConfigError, GatewayError
 from research_assistant.runtime.logging import BoundLogger, JsonLogger
 from research_assistant.runtime.settings import GatewaySettings
+from research_assistant.runtime.telemetry import llm_span
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型检查，避免与 context 循环导入
     from research_assistant.runtime.context import SolveContext
@@ -79,6 +80,33 @@ class Gateway(Protocol):
     ) -> GatewayResponse: ...
 
 
+@dataclass(frozen=True)
+class ParsedResponse:
+    content: str
+    finish_reason: str | None
+    usage: GatewayUsage
+    reasoning: str | None
+    payload: Mapping[str, Any]
+    duration_ms: float
+
+
+def _record_llm_span(span: Any, outcome: ParsedResponse) -> None:
+    """把 usage 与 finish_reason 写进 SDK 的 llm_call span。
+
+    属性名与 SDK 自己的 openai 拦截器保持一致（input_tokens/output_tokens/
+    cached_tokens/reasoning_tokens/context_length/finish_reason），
+    这样平台侧的 trace 消费方看到的就是同一种形状。
+    span 为 None（本地无 SDK）时什么都不做。
+    """
+    span.set(
+        input_tokens=outcome.usage.prompt_tokens,
+        output_tokens=outcome.usage.completion_tokens,
+        finish_reason=outcome.finish_reason,
+        context_length=outcome.usage.prompt_tokens,
+        cached_tokens=outcome.usage.cached_tokens,
+    )
+
+
 class HttpGateway:
     """真实网关适配器。`transport` 仅用于测试注入。"""
 
@@ -129,7 +157,6 @@ class HttpGateway:
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
 
-        started = time.monotonic()
         context.log.info(
             "gateway.request",
             stage=stage,
@@ -137,6 +164,39 @@ class HttpGateway:
             family=self._settings.family,
             message_count=len(messages),
         )
+        # 平台评测会核验真实任务 Trace：每次模型调用都开一个 SDK llm_call span。
+        # span 必须包住解析——usage/finish_reason 要在 span 结束前写进去；
+        # 传输或解析失败时异常穿过 span，SDK 会把它记进 span 再抛出。
+        with llm_span(self._settings.model, endpoint=self.endpoint) as span:
+            outcome = self._request_and_parse(body, timeout, stage, context)
+            if span is not None:
+                _record_llm_span(span, outcome)
+        context.log.info(
+            "gateway.response",
+            stage=stage,
+            duration_ms=round(outcome.duration_ms, 1),
+            finish_reason=outcome.finish_reason,
+            prompt_tokens=outcome.usage.prompt_tokens,
+            completion_tokens=outcome.usage.completion_tokens,
+            total_tokens=outcome.usage.total_tokens,
+            content_characters=len(outcome.content),
+        )
+        return GatewayResponse(
+            content=outcome.content,
+            finish_reason=outcome.finish_reason,
+            usage=outcome.usage,
+            reasoning=outcome.reasoning,
+            raw=outcome.payload,
+        )
+
+    def _request_and_parse(
+        self,
+        body: dict[str, Any],
+        timeout: float,
+        stage: str,
+        context: SolveContext,
+    ) -> ParsedResponse:
+        started = time.monotonic()
         try:
             with httpx.Client(timeout=httpx.Timeout(timeout), transport=self._transport) as client:
                 response = client.post(self.endpoint, json=body, headers=self._headers())
@@ -148,8 +208,11 @@ class HttpGateway:
 
         duration_ms = (time.monotonic() - started) * 1000
         if response.status_code != 200:
+            # 带上响应体片段：上下文超限这类错误只能从网关的错误文本里识别，
+            # 而识别出来才能触发「缩减证据包重试」。片段是网关的错误说明，不含我方凭据。
+            detail = response.text[:200].replace("\n", " ")
             raise GatewayError(
-                f"gateway returned HTTP {response.status_code} during {stage}",
+                f"gateway returned HTTP {response.status_code} during {stage}: {detail}",
                 case_id=context.case_id,
             )
         try:
@@ -196,22 +259,13 @@ class HttpGateway:
         usage = GatewayUsage.from_response(
             payload.get("usage") if isinstance(payload.get("usage"), Mapping) else None
         )
-        context.log.info(
-            "gateway.response",
-            stage=stage,
-            duration_ms=round(duration_ms, 1),
-            finish_reason=finish_reason,
-            prompt_tokens=usage.prompt_tokens,
-            completion_tokens=usage.completion_tokens,
-            total_tokens=usage.total_tokens,
-            content_characters=len(content) if isinstance(content, str) else 0,
-        )
-        return GatewayResponse(
+        return ParsedResponse(
             content=content if isinstance(content, str) else "",
             finish_reason=finish_reason if isinstance(finish_reason, str) else None,
             usage=usage,
             reasoning=reasoning if isinstance(reasoning, str) else None,
-            raw=payload,
+            payload=payload,
+            duration_ms=duration_ms,
         )
 
 

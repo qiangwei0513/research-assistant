@@ -22,8 +22,10 @@ from research_assistant.contracts.task import Task
 from research_assistant.documents.evidence import (
     EvidencePack,
     build_evidence_pack,
+    is_context_length_error,
     render_evidence_pack,
     render_unusable,
+    shrink_budget,
 )
 from research_assistant.documents.extractor import extract_documents
 from research_assistant.errors import GatewayError, MaterialUnavailableError
@@ -358,21 +360,39 @@ def solve_idea(task: Task, context: SolveContext) -> Mapping[str, Any]:
         )
 
     allowed = frozenset(pack.filenames)
-    markdown, response = complete_parsed(
-        context.gateway,
-        (
-            Message(role="system", content=SYSTEM_PROMPT),
-            Message(role="user", content=build_user_prompt(task, pack)),
-        ),
-        context=context,
-        stage=STAGE_GENERATE,
-        requirement=(
-            f"完整的 Markdown 研究方案正文，去掉首尾空白后至少 {TARGET_BODY_CHARACTERS} 字符，"
-            "含全部要求的小节与结尾的 ## 参考文献"
-        ),
-        parse=_parse_markdown,
-        max_tokens=MAX_TOKENS,
-    )
+
+    def _generate(current_pack: EvidencePack, stage: str):
+        return complete_parsed(
+            context.gateway,
+            (
+                Message(role="system", content=SYSTEM_PROMPT),
+                Message(role="user", content=build_user_prompt(task, current_pack)),
+            ),
+            context=context,
+            stage=stage,
+            requirement=(
+                f"完整的 Markdown 研究方案正文，去掉首尾空白后至少 {TARGET_BODY_CHARACTERS} 字符，"
+                "含全部要求的小节与结尾的 ## 参考文献"
+            ),
+            parse=_parse_markdown,
+            max_tokens=MAX_TOKENS,
+        )
+
+    try:
+        markdown, response = _generate(pack, STAGE_GENERATE)
+    except GatewayError as exc:
+        if not is_context_length_error(exc.message):
+            raise
+        shrunk = shrink_budget(IDEA_MAX_CHARS_PER_DOCUMENT)
+        pack = build_evidence_pack(report.documents, max_chars_per_document=shrunk)
+        allowed = frozenset(pack.filenames)
+        context.log.warning(
+            "idea.context_overflow_shrinking",
+            case_id=task.case_id,
+            new_budget_per_document=shrunk,
+            reason=exc.message[:200],
+        )
+        markdown, response = _generate(pack, STAGE_GENERATE + ".shrunk")
     check = check_idea_report(markdown)
     citations = analyze_citations(markdown, allowed)
     _log_check(context, check, citations, "generate")

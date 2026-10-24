@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from research_assistant.contracts.results import retrieval_result
 from research_assistant.contracts.task import Task
+from research_assistant.documents.evidence import is_context_length_error, shrink_budget
 from research_assistant.documents.extractor import extract_documents
 from research_assistant.documents.retrieval import (
     LexicalIndex,
@@ -251,22 +252,43 @@ def solve_retrieval(task: Task, context: SolveContext) -> Mapping[str, Any]:
     summaries = [summarize_for_prompt(candidate) for candidate in candidates]
     unusable = [d.filename for d in report.failures()]
 
-    messages = (
-        Message(role="system", content=SYSTEM_PROMPT),
-        Message(role="user", content=build_user_prompt(task, summaries, unusable)),
-    )
-    (_, selections), response = complete_parsed(
-        context.gateway,
-        messages,
-        context=context,
-        stage=STAGE,
-        requirement=(
-            '一个 JSON 对象，形如 {"papers": [{"filename": "...", "reason": "..."}]}，'
-            "filename 必须原样复制候选清单中的名字，没有相关候选时 papers 为空数组"
-        ),
-        parse=lambda content: (None, parse_selection(content, case_id=task.case_id)),
-        max_tokens=MAX_TOKENS,
-    )
+    def _rerank(current_summaries: list, stage: str):
+        return complete_parsed(
+            context.gateway,
+            (
+                Message(role="system", content=SYSTEM_PROMPT),
+                Message(
+                    role="user",
+                    content=build_user_prompt(task, current_summaries, unusable),
+                ),
+            ),
+            context=context,
+            stage=stage,
+            requirement=(
+                '一个 JSON 对象，形如 {"papers": [{"filename": "...", "reason": "..."}]}，'
+                "filename 必须原样复制候选清单中的名字，没有相关候选时 papers 为空数组"
+            ),
+            parse=lambda content: (None, parse_selection(content, case_id=task.case_id)),
+            max_tokens=MAX_TOKENS,
+        )
+
+    try:
+        (_, selections), response = _rerank(summaries, STAGE)
+    except GatewayError as exc:
+        # 正式模型上下文上限未知（Q01）：超限时把候选摘要预算减半再试一次
+        if not is_context_length_error(exc.message):
+            raise
+        shrunk = shrink_budget(MAX_CANDIDATE_CHARS)
+        candidates, strategy = select_candidates(task, index, usable)
+        summaries = [summarize_for_prompt(candidate) for candidate in candidates]
+        context.log.warning(
+            "retrieval.context_overflow_shrinking",
+            case_id=task.case_id,
+            new_candidate_chars=shrunk,
+            reason=exc.message[:200],
+        )
+        (_, selections), response = _rerank(summaries, STAGE + ".shrunk")
+
     papers = _map_to_authorized(selections, authorized, case_id=task.case_id, log=context.log)
 
     context.log.info(

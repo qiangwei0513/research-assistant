@@ -200,3 +200,25 @@ def any_unusable_reason(documents: Sequence[Document]) -> str | None:
         if d.status is not ParseStatus.OK
     ]
     return "；".join(reasons) if reasons else None
+
+
+# 正式模型的上下文上限未知（总纲 Q01）。开发网关能容纳 C/E 的完整证据包，
+# 平台模型未必。网关报上下文超限时，把每篇材料的字符预算减半重建证据包再试一次；
+# 只缩一次，避免无限降级把证据削到无法支撑引用。
+CONTEXT_ERROR_MARKERS: tuple[str, ...] = (
+    "context length",
+    "context_length",
+    "maximum context",
+    "too many tokens",
+    "prompt is too long",
+    "request too large",
+)
+
+
+def is_context_length_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in CONTEXT_ERROR_MARKERS)
+
+
+def shrink_budget(budget: int) -> int:
+    return max(800, budget // 2)

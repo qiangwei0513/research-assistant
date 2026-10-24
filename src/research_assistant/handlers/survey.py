@@ -16,11 +16,14 @@ from typing import TYPE_CHECKING, Any
 from research_assistant.contracts.results import MIN_BODY_CHARACTERS, survey_result
 from research_assistant.contracts.task import Task
 from research_assistant.documents.evidence import (
+    DEFAULT_MAX_CHARS_PER_DOCUMENT,
     EvidencePack,
     any_unusable_reason,
     build_evidence_pack,
+    is_context_length_error,
     render_evidence_pack,
     render_unusable,
+    shrink_budget,
 )
 from research_assistant.documents.extractor import extract_documents
 from research_assistant.errors import GatewayError, MaterialUnavailableError
@@ -144,6 +147,7 @@ def solve_survey(task: Task, context: SolveContext) -> Mapping[str, Any]:
 
     allowed = frozenset(pack.filenames)
     min_papers = min(MIN_DISTINCT_PAPERS, len(pack.entries))
+    evidence_budget = DEFAULT_MAX_CHARS_PER_DOCUMENT
     if min_papers < MIN_DISTINCT_PAPERS:
         # 材料不足时如实记录，不捏造第 5 篇
         context.log.warning(
@@ -154,23 +158,40 @@ def solve_survey(task: Task, context: SolveContext) -> Mapping[str, Any]:
             unusable=[(u.filename, u.status) for u in pack.unusable],
         )
 
-    messages = (
-        Message(role="system", content=SYSTEM_PROMPT),
-        Message(role="user", content=build_user_prompt(task, pack)),
-    )
+    def _generate(current_pack: EvidencePack, stage: str):
+        return complete_parsed(
+            context.gateway,
+            (
+                Message(role="system", content=SYSTEM_PROMPT),
+                Message(role="user", content=build_user_prompt(task, current_pack)),
+            ),
+            context=context,
+            stage=stage,
+            requirement=(
+                f"完整的 Markdown 综述正文，去掉首尾空白后至少 {TARGET_BODY_CHARACTERS} 字符，"
+                "含数字引用与结尾的 ## 参考文献"
+            ),
+            parse=_parse_markdown,
+            max_tokens=MAX_TOKENS,
+        )
+
     # 正文至少 800 字符是硬合同，过短会让整题非法；一次有界重问远比 0 分便宜
-    markdown, response = complete_parsed(
-        context.gateway,
-        messages,
-        context=context,
-        stage=STAGE_GENERATE,
-        requirement=(
-            f"完整的 Markdown 综述正文，去掉首尾空白后至少 {TARGET_BODY_CHARACTERS} 字符，"
-            "含数字引用与结尾的 ## 参考文献"
-        ),
-        parse=_parse_markdown,
-        max_tokens=MAX_TOKENS,
-    )
+    try:
+        markdown, response = _generate(pack, STAGE_GENERATE)
+    except GatewayError as exc:
+        # 正式模型上下文上限未知：超限时把每篇证据预算减半重建，再试一次且仅一次
+        if not is_context_length_error(exc.message):
+            raise
+        evidence_budget = shrink_budget(evidence_budget)
+        pack = build_evidence_pack(report.documents, max_chars_per_document=evidence_budget)
+        allowed = frozenset(pack.filenames)
+        context.log.warning(
+            "survey.context_overflow_shrinking",
+            case_id=task.case_id,
+            new_budget_per_document=evidence_budget,
+            reason=exc.message[:200],
+        )
+        markdown, response = _generate(pack, STAGE_GENERATE + ".shrunk")
     analysis = analyze_citations(markdown, allowed)
     _log_analysis(context, analysis, "generate")
 

@@ -153,3 +153,57 @@ def shutdown_telemetry() -> None:
         instance.shutdown()
     except Exception as exc:
         _LOG.warning("telemetry.shutdown_failed", reason=exc.__class__.__name__)
+
+
+def telemetry_configured() -> bool:
+    """平台镜像检查要求 /health 返回 telemetry_configured。
+
+    语义与 SDK 的 AgentRuntime 一致：`Telemetry.export_enabled`，即存在 provider 或
+    平台注入的 OTLP 端点（OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT）。
+    本地没有这些变量时为 False；平台上由注入的配置决定。
+    构造 Telemetry 失败（例如 AGENTHACK_TELEMETRY_REQUIRED=true 却无端点）记为未配置并告警，
+    绝不让 /health 因此抛异常。
+    """
+    try:
+        instance = _telemetry_instance()
+    except Exception as exc:  # /health 必须永远能回答
+        _LOG.warning("telemetry.config_probe_failed", reason=exc.__class__.__name__)
+        return False
+    if instance is None:
+        return False
+    return bool(getattr(instance, "export_enabled", False))
+
+
+@contextmanager
+def llm_span(model: str, *, endpoint: str | None = None, streaming: bool = False):
+    """为一次模型调用产出真实的 LLM trace span。
+
+    平台评测会核验实际任务 Trace。SDK 的 openai 拦截器只认 openai 官方客户端，
+    而我们用 httpx，所以走 SDK 明写的「Manual adapter for SDKs other than
+    OpenAI Chat Completions」——`llm_call(model, provider, endpoint, streaming)`。
+    业务异常照常穿过 span（SDK 会把它记进 span 再抛出）；
+    只有遥测自身构造/退出的失败被吞掉并记日志。
+    无 SDK 时 yield None，调用方据此跳过属性设置。
+    """
+    module = _import_module("agenthack.telemetry")
+    factory = getattr(module, "llm_call", None) if module is not None else None
+    if factory is None:
+        yield None
+        return
+    manager = factory(model, "openai-compatible", endpoint=endpoint, streaming=streaming)
+    try:
+        op = manager.__enter__()
+    except Exception as exc:
+        _LOG.warning("telemetry.llm_span_unavailable", reason=exc.__class__.__name__)
+        yield None
+        return
+    try:
+        yield op
+    except BaseException as exc:
+        manager.__exit__(type(exc), exc, exc.__traceback__)
+        raise
+    else:
+        try:
+            manager.__exit__(None, None, None)
+        except Exception as exc:
+            _LOG.warning("telemetry.llm_span_exit_failed", reason=exc.__class__.__name__)

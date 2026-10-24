@@ -32,6 +32,7 @@ from research_assistant.runtime.telemetry import (
     flush_telemetry,
     install_interceptors,
     shutdown_telemetry,
+    telemetry_configured,
     trace_session,
 )
 from research_assistant.solve import persist_and_verify, solve
@@ -137,6 +138,8 @@ def create_app(settings: Settings | None = None, *, gateway: Gateway | None = No
             "workspace_root": str(resolved.workspace_root),
             "team_configured": bool(resolved.team),
             "gateway_configured": resolved.gateway is not None,
+            # 平台镜像检查要求该字段：Telemetry.export_enabled，即平台注入的 OTLP 配置是否生效
+            "telemetry_configured": telemetry_configured(),
             "dispatch_mounted": mounted,
         }
         return Response(
