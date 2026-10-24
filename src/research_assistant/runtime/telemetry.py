@@ -197,6 +197,24 @@ def telemetry_configured() -> bool:
     return bool(getattr(instance, "export_enabled", False))
 
 
+def set_current_span_attribute(key: str, value: str) -> None:
+    """给当前活跃 span（官方 session 根）补属性；本地无 OTEL 时静默。
+
+    平台可能按传输 UUID 关联 trace，也可能按题号；task span 已有 case_id，
+    这里在进入 task() 之前再写到 session 根 span，两种关联都能命中。
+    """
+    try:
+        from opentelemetry import trace
+    except ImportError:
+        return
+    try:
+        span = trace.get_current_span()
+        if span is not None and span.is_recording():
+            span.set_attribute(key, value)
+    except Exception as exc:
+        _LOG.warning("telemetry.span_attribute_failed", reason=exc.__class__.__name__)
+
+
 @contextmanager
 def llm_span(model: str, *, endpoint: str | None = None, streaming: bool = False):
     """为一次模型调用产出真实的 LLM trace span。

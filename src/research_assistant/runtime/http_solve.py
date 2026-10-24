@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from functools import partial
 from typing import Any
 
@@ -24,7 +24,12 @@ from research_assistant.runtime.context import SolveContext, load_task_context
 from research_assistant.runtime.gateway import Gateway
 from research_assistant.runtime.logging import JsonLogger
 from research_assistant.runtime.settings import Settings
-from research_assistant.runtime.telemetry import flush_telemetry, task_span, trace_session
+from research_assistant.runtime.telemetry import (
+    flush_telemetry,
+    set_current_span_attribute,
+    task_span,
+    trace_session,
+)
 from research_assistant.solve import persist_and_verify, solve
 
 JSON_MEDIA_TYPE = "application/json; charset=utf-8"
@@ -71,10 +76,13 @@ def trace_current_task(
     task_id: str,
     session_id: str | None,
 ) -> Iterator[Any]:
-    with (
-        trace_session(task_id, task.function.value, headers, session_id=session_id),
-        task_span() as operation,
-    ):
+    with ExitStack() as stack:
+        stack.enter_context(
+            trace_session(task_id, task.function.value, headers, session_id=session_id)
+        )
+        # 先写 session 根 span，再进入 task()，否则当前 span 会变成 task
+        set_current_span_attribute("case_id", task.case_id)
+        operation = stack.enter_context(task_span())
         if operation is not None:
             # task_id 是平台传输 UUID；把题号作为显式属性，两种关联都能查到
             operation.set(case_id=task.case_id)
