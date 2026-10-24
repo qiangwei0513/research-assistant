@@ -1,0 +1,21 @@
+# 只把 src/ 送进构建上下文；凭据、测试、文档、虚拟环境与本地工作区一律排除。
+.git
+.gitignore
+.dockerignore
+.env
+.env.*
+.venv
+.superpowers
+.pytest_cache
+.ruff_cache
+docs
+tests
+scripts
+work
+uv.lock
+pyproject.toml
+.python-version
+AGENTS.md
+**/__pycache__
+**/*.pyc
+.DS_Store
