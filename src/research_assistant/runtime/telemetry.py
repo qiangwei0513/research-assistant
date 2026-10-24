@@ -27,6 +27,18 @@ def reset_cache() -> None:
     _TELEMETRY_TRIED = False
 
 
+def use_instance(instance: Any | None) -> None:
+    """复用外部已经建好的 Telemetry 实例。
+
+    交付镜像由 agenthack.AgentRuntime 启动，它自己持有一个 Telemetry。若这里再建一个，
+    同一进程会有两个 TracerProvider：span 被重复导出，session 上下文也不是同一个。
+    因此官方入口必须把 runtime.telemetry 注入进来，之后的 session/task/llm 都走它。
+    """
+    global _TELEMETRY, _TELEMETRY_TRIED
+    _TELEMETRY = instance
+    _TELEMETRY_TRIED = True
+
+
 def _import_module(name: str) -> Any | None:
     module = sys.modules.get(name, "missing")
     if module is None:

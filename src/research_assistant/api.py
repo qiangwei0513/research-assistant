@@ -1,8 +1,9 @@
-"""FastAPI 应用：GET /health 与 POST /solve。
+"""开发用 FastAPI 应用：GET /health 与 POST /solve。
 
-不复用 agenthack.AgentRuntime：它自带的 /solve 是通用赛题合同（TaskRequest/TaskResponse 包装，
-constraints 是对象），与赛题一的八字段输入（constraints 是字符串数组）和纯结果 JSON 冲突——
-请求会被判 422，响应会多出 task_id/status/output/metadata 顶层字段。
+交付镜像不以本模块为入口——它由 `agenthack.AgentRuntime(...).run()` 启动，
+并在官方 app 上替换 `/solve` 以适配赛题一八字段协议（见 `official_runtime.py`）。
+本模块保留给本地开发、单测与没有 agenthack 的环境；两条路径共用 `http_solve`，
+协议实现只有一份。官方运行时的 /health 由 SDK 提供（含 telemetry_configured）。
 """
 
 from __future__ import annotations
@@ -10,53 +11,31 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from collections.abc import Mapping
 from contextlib import asynccontextmanager
-from functools import partial
-from typing import Any
 from uuid import uuid4
 
 import anyio.to_thread
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 
 from research_assistant import __version__
 from research_assistant.contracts.dispatch import RULES_VERSION_V3
-from research_assistant.contracts.task import Task
-from research_assistant.errors import ResearchAssistantError, TaskContractError, error_body
-from research_assistant.runtime.context import SolveContext, load_task_context
 from research_assistant.runtime.gateway import Gateway
+from research_assistant.runtime.http_solve import JSON_MEDIA_TYPE, handle_solve
 from research_assistant.runtime.logging import JsonLogger
 from research_assistant.runtime.settings import Settings
 from research_assistant.runtime.telemetry import (
     flush_telemetry,
     install_interceptors,
     shutdown_telemetry,
-    task_span,
     telemetry_configured,
-    trace_session,
 )
-from research_assistant.solve import persist_and_verify, solve
 
-JSON_MEDIA_TYPE = "application/json; charset=utf-8"
 HEALTH_PROBE_NAME = ".health-probe"
-SESSION_HEADER = "x-session-id"
-TRACE_CONTEXT_HEADERS = frozenset({"traceparent", "tracestate"})
 
 
 def build_settings() -> Settings:
     return Settings.from_env(os.environ)
-
-
-def _error_response(exc: ResearchAssistantError, log: JsonLogger) -> JSONResponse:
-    log.error(
-        "solve.failed",
-        error_type=type(exc).__name__,
-        case_id=exc.case_id,
-        http_status=exc.http_status,
-        detail=exc.message,
-    )
-    return JSONResponse(status_code=exc.http_status, content=error_body(exc))
 
 
 def _workspace_writable(settings: Settings) -> bool:
@@ -86,25 +65,6 @@ def _dispatch_mounted(settings: Settings) -> bool:
     if not settings.team:
         return False
     return (settings.workspace_root / "data" / settings.team / "dispatch.json").is_file()
-
-
-def _solve_in_thread(task: Task, context: SolveContext) -> bytes:
-    return persist_and_verify(solve(task, context), context)
-
-
-def _unexpected_response(exc: Exception, case_id: str, log: JsonLogger) -> JSONResponse:
-    # 只回异常类名，不回消息：未预期异常的消息可能含路径、负载片段等内部细节
-    log.error("solve.unexpected", error_type=exc.__class__.__name__, case_id=case_id)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": {
-                "type": "UnexpectedError",
-                "message": exc.__class__.__name__,
-                "case_id": case_id,
-            }
-        },
-    )
 
 
 def create_app(settings: Settings | None = None, *, gateway: Gateway | None = None) -> FastAPI:
@@ -152,56 +112,6 @@ def create_app(settings: Settings | None = None, *, gateway: Gateway | None = No
 
     @app.post("/solve")
     async def solve_endpoint(request: Request) -> Response:
-        """只解当前题：绝不遍历整轮 11 题。"""
-        try:
-            raw = await request.body()
-        except Exception as exc:
-            # 读体失败也必须回合同规定的错误形状，而不是让框架吐默认 500
-            return _error_response(
-                TaskContractError(f"cannot read request body: {exc.__class__.__name__}"), log
-            )
-        try:
-            payload: Mapping[str, Any] = json.loads(raw)
-        except ValueError as exc:
-            return _error_response(TaskContractError(f"request body is not valid JSON: {exc}"), log)
-        if not isinstance(payload, Mapping):
-            return _error_response(TaskContractError("request body must be a JSON object"), log)
-
-        try:
-            task = Task.parse(payload)
-        except ResearchAssistantError as exc:
-            return _error_response(exc, log)
-
-        # 只透传会话标识与 W3C trace context，避免把 Authorization 等敏感头带进 trace
-        session_id = request.headers.get(SESSION_HEADER)
-        trace_headers = {
-            k: v for k, v in request.headers.items() if k.lower() in TRACE_CONTEXT_HEADERS
-        }
-        try:
-            # SDK 拓扑是 session → task → llm：task() 必须在 session 内，
-            # 否则平台报 AGENT_RUNTIME_TRACE_MISSING（只有 session 与 llm 不够）
-            with (
-                trace_session(
-                    task.case_id, task.function.value, trace_headers, session_id=session_id
-                ),
-                task_span() as task_op,
-            ):
-                context = await anyio.to_thread.run_sync(
-                    partial(load_task_context, task, resolved, gateway=gateway)
-                )
-                data = await anyio.to_thread.run_sync(_solve_in_thread, task, context)
-                if task_op is not None:
-                    # 与官方 AgentRuntime 一致：在 task span 结束前记录产物大小
-                    task_op.result(data)
-        except ResearchAssistantError as exc:
-            return _error_response(exc, log)
-        except Exception as exc:
-            # 未预期异常不得泄漏内部细节：只回类名，不回消息
-            return _unexpected_response(exc, task.case_id, log)
-        finally:
-            # 必须等 session span 也结束再 flush，否则导出的 trace 缺顶层 session
-            flush_telemetry()
-        # 响应体直接复用落盘字节，保证与文件逐字节一致
-        return Response(content=data, status_code=200, media_type=JSON_MEDIA_TYPE)
+        return await handle_solve(request, settings=resolved, gateway=gateway, log=log)
 
     return app
