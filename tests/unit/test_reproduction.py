@@ -811,3 +811,152 @@ def test_generated_source_is_never_prewritten_into_the_repository() -> None:
     for path in src_root.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         assert "def run_experiment(" not in text, path
+
+
+# --- 自测回路（保护 40 分不被「通过准入却运行即崩」的源码毁掉） ---
+
+from research_assistant.reproduction.selftest import (  # noqa: E402
+    SelfTestCase,
+    build_self_test_cases,
+    run_self_test,
+)
+
+
+def _write_impl(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "implementation.py"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def _cases(tmp_path: Path) -> tuple[SelfTestCase, ...]:
+    request = tmp_path / "request.json"
+    request.write_text("{}", encoding="utf-8")
+    return (SelfTestCase(name="main", payload={"case_id": "D-01", "phase": "run"}, origin="t"),)
+
+
+def test_self_test_passes_for_a_working_implementation(tmp_path: Path) -> None:
+    impl = _write_impl(
+        tmp_path,
+        "def run_experiment(request):\n    return {'baseline': [1], 'details': {'ok': True}}\n",
+    )
+    result = run_self_test(impl, _cases(tmp_path), work_dir=tmp_path / "work")
+    assert result.ok is True
+    assert result.passed == 1
+    assert result.output_keys == ("baseline", "details")
+
+
+def test_self_test_catches_a_name_error_that_admission_would_miss(tmp_path: Path) -> None:
+    """实测发生过的真实故障：用了 re 却没 import re。
+
+    官方 AST 检查只看语法与入口函数名，这类源码能通过来源准入却运行即崩；
+    helper 一执行就锁源，整题 40 分归零。自测必须在调用 helper 之前拦住它。
+    """
+    impl = _write_impl(
+        tmp_path,
+        "def run_experiment(request):\n    return re.findall(r'[a-z]+', 'abc')\n",
+    )
+    from research_assistant.reproduction.source import extract_source
+
+    # 先确认它确实能通过来源准入
+    source = impl.read_text(encoding="utf-8")
+    assert extract_source(_response_wrapping(source)) == source
+    result = run_self_test(impl, _cases(tmp_path), work_dir=tmp_path / "work")
+    assert result.ok is False
+    assert "NameError" in (result.error or "")
+
+
+def _response_wrapping(source: str) -> dict[str, Any]:
+    return chat_response(source)
+
+
+def test_self_test_does_not_truncate_a_large_result(tmp_path: Path) -> None:
+    """回归：曾把结果 print 时截断到 4000 字符，D-02 的 27 行搜索记录必然解析失败。"""
+    impl = _write_impl(
+        tmp_path,
+        "def run_experiment(request):\n"
+        "    return {'details': {'search': [{'i': i, 'pad': 'x' * 40} for i in range(200)]}}\n",
+    )
+    result = run_self_test(impl, _cases(tmp_path), work_dir=tmp_path / "work")
+    assert result.ok is True, result.error
+    assert result.passed == 1
+
+
+def test_self_test_ignores_debug_output_from_the_implementation(tmp_path: Path) -> None:
+    """回归：曾靠「stdout 最后一行是 JSON」取结果，生成源码自己 print 就会取错行。"""
+    impl = _write_impl(
+        tmp_path,
+        "def run_experiment(request):\n"
+        "    print('debug: loading data')\n"
+        "    print('not json at all')\n"
+        "    return {'baseline': [], 'candidate': None}\n",
+    )
+    result = run_self_test(impl, _cases(tmp_path), work_dir=tmp_path / "work")
+    assert result.ok is True, result.error
+    assert result.output_keys == ("baseline", "candidate")
+
+
+def test_self_test_reports_a_nonzero_exit(tmp_path: Path) -> None:
+    impl = _write_impl(tmp_path, "def run_experiment(request):\n    raise ValueError('boom')\n")
+    result = run_self_test(impl, _cases(tmp_path), work_dir=tmp_path / "work")
+    assert result.ok is False
+    assert "boom" in (result.error or "")
+
+
+def test_self_test_reports_a_timeout(tmp_path: Path) -> None:
+    impl = _write_impl(tmp_path, "def run_experiment(request):\n    while True:\n        pass\n")
+    result = run_self_test(impl, _cases(tmp_path), work_dir=tmp_path / "work", timeout=2.0)
+    assert result.ok is False
+    assert "超时" in (result.error or "")
+
+
+def test_self_test_with_no_cases_is_a_pass(tmp_path: Path) -> None:
+    impl = _write_impl(tmp_path, "def run_experiment(request):\n    return {}\n")
+    result = run_self_test(impl, (), work_dir=tmp_path / "work")
+    assert result.ok is True
+    assert result.case_count == 0
+
+
+def test_public_sample_requests_are_preferred_over_the_synthesised_one(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "experiments"
+    (root / "D-01").mkdir(parents=True)
+    (root / "D-01" / "sample.json").write_text(
+        json.dumps({"case_id": "D-01", "phase": "run", "data": {}}), encoding="utf-8"
+    )
+    (root / "D-01" / "protocol.json").write_text('{"seed": 42}', encoding="utf-8")
+    (root / "公开样例请求" / "D-01").mkdir(parents=True)
+    (root / "公开样例请求" / "D-01.json").write_text(
+        json.dumps({"stage": "run", "payload": {"case_id": "D-01", "phase": "run"}}),
+        encoding="utf-8",
+    )
+    (root / "公开样例请求" / "D-01" / "边界.json").write_text(
+        json.dumps({"stage": "run", "payload": {"case_id": "D-01", "phase": "run"}}),
+        encoding="utf-8",
+    )
+    materials = load_case_materials("D-01", root)
+    cases = build_self_test_cases(materials, root)
+    assert [c.name for c in cases] == ["D-01", "边界"]
+
+
+def test_sample_json_is_synthesised_into_a_callable_payload(tmp_path: Path) -> None:
+    """sample.json 是 {case_id,phase,data}，不是完整 worker 请求；必须补上 protocol。"""
+    root = tmp_path / "experiments"
+    (root / "D-01").mkdir(parents=True)
+    (root / "D-01" / "sample.json").write_text(
+        json.dumps({"case_id": "D-01", "phase": "run", "data": {"texts": []}}), encoding="utf-8"
+    )
+    (root / "D-01" / "protocol.json").write_text('{"seed": 42, "epochs": 100}', encoding="utf-8")
+    materials = load_case_materials("D-01", root)
+    (case,) = build_self_test_cases(materials, root)
+    assert case.payload["protocol"] == {"seed": 42, "epochs": 100}
+    assert case.payload["phase"] == "run"
+
+
+def test_no_self_test_cases_when_nothing_is_available(tmp_path: Path) -> None:
+    root = tmp_path / "experiments"
+    (root / "D-01").mkdir(parents=True)
+    (root / "D-01" / "method.md").write_text("# m", encoding="utf-8")
+    (root / "D-01" / "protocol.json").write_text("{}", encoding="utf-8")
+    materials = load_case_materials("D-01", root)
+    assert build_self_test_cases(materials, root) == ()

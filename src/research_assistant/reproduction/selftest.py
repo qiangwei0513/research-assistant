@@ -59,7 +59,11 @@ _spec.loader.exec_module(_module)
 with open(sys.argv[2], encoding="utf-8") as _handle:
     _payload = json.load(_handle)
 _result = _module.run_experiment(_payload)
-print(json.dumps(_result, ensure_ascii=False, allow_nan=False)[:4000])
+# 结果写文件而不是打印到 stdout：
+# 1) 不得截断——D-02 的 run 阶段要返回 27 行搜索记录加全部查询排名，远超任何固定上限；
+# 2) 生成的源码若自己 print 了调试信息，靠「stdout 最后一行是 JSON」会取错行。
+with open(sys.argv[3], "w", encoding="utf-8") as _out:
+    json.dump(_result, _out, ensure_ascii=False, allow_nan=False)
 """
 
 
@@ -167,6 +171,8 @@ def run_self_test(
             ),
             encoding="utf-8",
         )
+        result_file = work_dir / f"_selftest_{case.name}.out.json"
+        result_file.unlink(missing_ok=True)
         # argv 列表调用，不经 shell；-I 隔离模式避免继承 PYTHONPATH 等外部影响
         command = [
             interpreter,
@@ -175,6 +181,7 @@ def run_self_test(
             str(runner),
             str(implementation),
             str(request_file),
+            str(result_file),
         ]
         try:
             completed = subprocess.run(
@@ -199,9 +206,13 @@ def run_self_test(
             continue
 
         try:
-            parsed = json.loads(completed.stdout.strip().splitlines()[-1])
-        except (ValueError, IndexError):
-            first_error = first_error or f"{case.name}: 自测输出不是合法 JSON"
+            parsed = json.loads(result_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            detail = (completed.stderr or completed.stdout).strip().splitlines()
+            tail = "; ".join(detail[-3:])[:max_captured_output]
+            first_error = first_error or (
+                f"{case.name}: 自测未产出合法 JSON 结果" + (f"（{tail}）" if tail else "")
+            )
             continue
         if not isinstance(parsed, Mapping):
             first_error = first_error or f"{case.name}: 自测输出不是 JSON 对象"
