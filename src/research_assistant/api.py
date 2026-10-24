@@ -184,12 +184,15 @@ def create_app(settings: Settings | None = None, *, gateway: Gateway | None = No
                 trace_session(
                     task.case_id, task.function.value, trace_headers, session_id=session_id
                 ),
-                task_span(),
+                task_span() as task_op,
             ):
                 context = await anyio.to_thread.run_sync(
                     partial(load_task_context, task, resolved, gateway=gateway)
                 )
                 data = await anyio.to_thread.run_sync(_solve_in_thread, task, context)
+                if task_op is not None:
+                    # 与官方 AgentRuntime 一致：在 task span 结束前记录产物大小
+                    task_op.result(data)
         except ResearchAssistantError as exc:
             return _error_response(exc, log)
         except Exception as exc:
