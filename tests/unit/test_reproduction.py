@@ -664,7 +664,7 @@ def test_source_never_admissible_yields_failed_answer(
     context = context_for(
         base_env,
         task,
-        [gateway_response("not python at all"), gateway_response("still not python")],
+        [gateway_response("not python at all")] * 3,
         papers_root,
         tmp_workspace,
     )

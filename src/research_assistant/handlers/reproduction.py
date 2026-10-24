@@ -39,6 +39,11 @@ from research_assistant.reproduction.materials import (
     build_generation_prompt,
     load_case_materials,
 )
+from research_assistant.reproduction.selftest import (
+    DEFAULT_SELF_TEST_TIMEOUT,
+    build_self_test_cases,
+    run_self_test,
+)
 from research_assistant.reproduction.source import (
     SourceExtractionError,
     save_source,
@@ -57,10 +62,11 @@ STAGE_REGENERATE = "reproduction.regenerate_source"
 MIN_GENERATION_SECONDS = 15.0
 # helper 的 RPC 上限是 600 秒，但整题只有 180 秒：正式运行必须拿到足够预算，
 # 因此生成阶段要为它预留时间，而不是把 180 秒全花在模型上。
-RESERVE_RUN_SECONDS = 60.0
+RESERVE_RUN_SECONDS = 55.0
+RESERVE_SELF_TEST_SECONDS = 12.0
 RESERVE_PERSIST_SECONDS = 5.0
 MIN_RUN_SECONDS = 20.0
-MAX_GENERATION_ATTEMPTS = 2
+MAX_GENERATION_ATTEMPTS = 3
 IMPLEMENTATION_FILENAME = "implementation.py"
 EXPERIMENT_ROOT_ENV = "RESEARCH_EXPERIMENT_ROOT"
 HELPER_PATH_ENV = "RESEARCH_EXPERIMENT_HELPER"
@@ -92,18 +98,32 @@ def _failure_answer(
 
 
 def _generate_source(
-    task: Task, context: SolveContext, materials: CaseMaterials, destination: Path
-) -> tuple[str, str] | None:
-    """在本题会话内生成并原样保存源码，返回 (源码, sha256)；预算不足或反复失败返回 None。"""
+    task: Task,
+    context: SolveContext,
+    materials: CaseMaterials,
+    destination: Path,
+    experiment_root: Path,
+) -> tuple[str, str, bool] | None:
+    """在本题会话内生成源码、自测、必要时让模型完整重生成。
+
+    返回 (源码, sha256, 自测是否通过)；预算不足或始终拿不到可用源码时返回 None。
+
+    自测不可省：官方 AST 检查只验语法与入口函数名，`re.findall` 而没 `import re`
+    这类错误能顺利通过来源准入，却在正式执行时 NameError；而 helper 一执行就锁源，
+    锁源后不得更换源码，整题 40 分会直接归零。
+    """
     prompt = build_generation_prompt(task.input, materials)
     messages = [
         Message(role="system", content=GENERATION_SYSTEM_PROMPT),
         Message(role="user", content=prompt),
     ]
+    cases = build_self_test_cases(materials, experiment_root)
+    best: tuple[str, str] | None = None
     last_error = ""
+
     for attempt in range(1, MAX_GENERATION_ATTEMPTS + 1):
         stage = STAGE_GENERATE if attempt == 1 else STAGE_REGENERATE
-        reserve = RESERVE_RUN_SECONDS + RESERVE_PERSIST_SECONDS
+        reserve = RESERVE_RUN_SECONDS + RESERVE_PERSIST_SECONDS + RESERVE_SELF_TEST_SECONDS
         if context.deadline.remaining() - reserve < MIN_GENERATION_SECONDS:
             context.log.warning(
                 "reproduction.generation_skipped_budget",
@@ -111,13 +131,13 @@ def _generate_source(
                 attempt=attempt,
                 remaining=round(context.deadline.remaining(), 2),
             )
-            return None
+            break
         response = context.gateway.complete(messages, context=context, stage=stage)
         try:
             # 提取工具接收的是**完整响应对象**，不是单独的 message.content
             source, digest = save_source(response.raw, destination)
         except SourceExtractionError as exc:
-            last_error = str(exc)
+            last_error = f"来源格式检查未通过：{exc}"
             context.log.warning(
                 "reproduction.source_rejected",
                 case_id=task.case_id,
@@ -125,35 +145,72 @@ def _generate_source(
                 finish_reason=response.finish_reason,
                 reason=last_error[:200],
             )
-            # 截断或多份实现时，让同一会话模型重新返回完整版本，而不是本地修补
             messages.append(Message(role="assistant", content=response.content))
-            messages.append(
-                Message(
-                    role="user",
-                    content=(
-                        f"上一次回复未通过来源格式检查：{last_error}。"
-                        "请重新返回**一份完整的** Python 实现，放在单个 ```python 围栏内；"
-                        "不要输出 diff、不要输出多份实现、不要输出解释文字。"
-                    ),
-                )
-            )
+            messages.append(Message(role="user", content=_regeneration_request(last_error)))
             continue
-        context.log.info(
-            "reproduction.source_saved",
+
+        best = (source, digest)
+        result = run_self_test(
+            destination,
+            cases,
+            work_dir=context.work_dir,
+            timeout=min(
+                DEFAULT_SELF_TEST_TIMEOUT,
+                max(2.0, context.deadline.remaining() - RESERVE_RUN_SECONDS),
+            ),
+            log=context.log,
+        )
+        if result.ok:
+            context.log.info(
+                "reproduction.source_saved",
+                case_id=task.case_id,
+                attempt=attempt,
+                source_sha256=digest,
+                source_bytes=len(source.encode("utf-8")),
+                self_test_passed=True,
+                self_test_cases=result.case_count,
+            )
+            return source, digest, True
+
+        last_error = f"隔离自测失败：{result.error or '未知原因'}"
+        context.log.warning(
+            "reproduction.self_test_failed",
             case_id=task.case_id,
             attempt=attempt,
             source_sha256=digest,
-            source_bytes=len(source.encode("utf-8")),
-            path=str(destination),
+            passed=result.passed,
+            cases=result.case_count,
+            reason=(result.error or "")[:300],
         )
-        return source, digest
-    context.log.error(
-        "reproduction.source_unavailable",
+        # 只能让同一会话模型重新返回完整版本，绝不本地补码或打补丁
+        messages.append(Message(role="assistant", content=response.content))
+        messages.append(Message(role="user", content=_regeneration_request(last_error)))
+
+    if best is None:
+        context.log.error(
+            "reproduction.source_unavailable",
+            case_id=task.case_id,
+            attempts=MAX_GENERATION_ATTEMPTS,
+            last_reason=last_error[:200],
+        )
+        return None
+    source, digest = best
+    context.log.warning(
+        "reproduction.source_used_despite_failed_self_test",
         case_id=task.case_id,
-        attempts=MAX_GENERATION_ATTEMPTS,
-        last_reason=last_error[:200],
+        source_sha256=digest,
+        reason=last_error[:300],
     )
-    return None
+    return source, digest, False
+
+
+def _regeneration_request(reason: str) -> str:
+    return (
+        f"上一次回复未通过检查：{reason}\n"
+        "请重新返回**一份完整的** Python 实现，放在单个 ```python 围栏内。"
+        "必须自包含：所有用到的标准库都要在文件顶部自己 import（例如用到 re 就要 import re）；"
+        "不得依赖任何第三方库；不要输出 diff、不要输出多份实现、不要输出解释文字。"
+    )
 
 
 def _save_diagnostics(context: SolveContext, outcome: ExperimentOutcome) -> None:
@@ -261,9 +318,13 @@ def solve_reproduction(task: Task, context: SolveContext) -> Mapping[str, Any] |
 
     context.work_dir.mkdir(parents=True, exist_ok=True)
     implementation = context.work_dir / IMPLEMENTATION_FILENAME
-    generated = _generate_source(task, context, materials, implementation)
+    generated = _generate_source(task, context, materials, implementation, experiment_root)
     if generated is None:
         return _failure_answer(task, context, "failed", "no admissible model source this session")
+    _source, _digest, self_test_passed = generated
+    if not self_test_passed:
+        # 自测没过仍然尝试正式执行：不调用必然 0 分，调用还可能拿到流程与图表的部分分
+        context.log.warning("reproduction.proceeding_without_self_test", case_id=task.case_id)
 
     client = build_experiment_client(context)
     run_timeout = max(MIN_RUN_SECONDS, context.deadline.remaining() - RESERVE_PERSIST_SECONDS)
