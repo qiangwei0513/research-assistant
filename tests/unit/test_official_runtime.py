@@ -203,21 +203,27 @@ def test_invalid_body_is_422_and_opens_no_session(fake_sdk: None, base_env: dict
     assert runtime.events == []
 
 
-def test_main_uses_the_official_runtime_when_the_sdk_exists(
-    monkeypatch: pytest.MonkeyPatch,
+def test_main_constructs_agent_runtime_and_runs_it(
+    fake_sdk: None, base_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """组委会要求入口最终执行 AgentRuntime(...).run()，这里直接钉住这条链路。"""
     from research_assistant import __main__ as entry
-    from research_assistant.runtime import official_runtime
 
     monkeypatch.setattr(entry, "_sdk_available", lambda: True)
+    for key, value in base_env.items():
+        monkeypatch.setenv(key, value)
     monkeypatch.delenv("RESEARCH_HOST", raising=False)
     monkeypatch.delenv("RESEARCH_PORT", raising=False)
     called: dict[str, Any] = {}
-    monkeypatch.setattr(
-        official_runtime, "run_official", lambda host, port: called.update(host=host, port=port)
-    )
+
+    def fake_run(self: FakeRuntime, host: str = "0.0.0.0", port: int = 8080) -> None:
+        called.update(host=host, port=port, agent=type(self.agent).__name__)
+
+    monkeypatch.setattr(FakeRuntime, "run", fake_run)
     entry.main()
-    assert called == {"host": "0.0.0.0", "port": 8080}
+    assert called["host"] == "0.0.0.0"
+    assert called["port"] == 8080
+    assert called["agent"] == "ResearchAgent"
 
 
 def test_main_falls_back_to_the_dev_app_without_the_sdk(

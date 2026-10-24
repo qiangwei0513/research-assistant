@@ -32,9 +32,13 @@ def main() -> None:
         JsonLogger("api").warning("service.official_runtime_unavailable", reason="no agenthack")
         uvicorn.run(create_app(), host=host, port=port, log_level="warning")
         return
-    from research_assistant.runtime.official_runtime import run_official
+    from agenthack import AgentRuntime
 
-    run_official(host=host, port=port)
+    from research_assistant.runtime.official_runtime import configure_runtime, make_agent
+
+    runtime = AgentRuntime(make_agent())
+    configure_runtime(runtime)
+    runtime.run(host=host, port=port)
 
 
 if __name__ == "__main__":

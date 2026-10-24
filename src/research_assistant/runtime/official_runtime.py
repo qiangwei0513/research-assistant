@@ -24,7 +24,7 @@ from research_assistant.runtime.settings import Settings
 from research_assistant.runtime.telemetry import use_instance
 
 
-def _agent_instance() -> Any:
+def make_agent() -> Any:
     from agenthack import BaseAgent
 
     class ResearchAgent(BaseAgent):
@@ -44,14 +44,12 @@ def _replace_solve_route(app: FastAPI, endpoint: Any) -> None:
     app.add_api_route("/solve", endpoint, methods=["POST"], response_class=Response)
 
 
-def build_official_app(
-    settings: Settings | None = None, *, gateway: Gateway | None = None
-) -> tuple[Any, Settings]:
-    from agenthack import AgentRuntime
-
+def configure_runtime(
+    runtime: Any, settings: Settings | None = None, *, gateway: Gateway | None = None
+) -> Settings:
+    """在官方 runtime 上接入赛题一 /solve，并复用它的 Telemetry。"""
     resolved = settings if settings is not None else build_settings()
     log = JsonLogger("api", resolved.log_level)
-    runtime = AgentRuntime(_agent_instance())
     # 复用官方实例：再建一个 Telemetry 会导致重复 provider 与不同 session 上下文
     use_instance(runtime.telemetry)
 
@@ -66,8 +64,19 @@ def build_official_app(
         rules_version=RULES_VERSION_V3,
         gateway_configured=resolved.gateway is not None,
         gateway_family=resolved.gateway.family if resolved.gateway else None,
+        gateway_warning=resolved.gateway_config_warning,
         telemetry_configured=getattr(runtime.telemetry, "export_enabled", False),
     )
+    return resolved
+
+
+def build_official_app(
+    settings: Settings | None = None, *, gateway: Gateway | None = None
+) -> tuple[Any, Settings]:
+    from agenthack import AgentRuntime
+
+    runtime = AgentRuntime(make_agent())
+    resolved = configure_runtime(runtime, settings, gateway=gateway)
     return runtime, resolved
 
 

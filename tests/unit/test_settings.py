@@ -55,20 +55,22 @@ def test_challenge_wins_when_both_groups_are_identical() -> None:
     assert settings.gateway_config_error is None
 
 
-def test_conflicting_groups_raise_config_error_without_leaking_values() -> None:
+def test_conflicting_groups_prefer_the_recommended_group_without_leaking_values() -> None:
+    """平台可能同时注入两组；不一致时用推荐的 CHALLENGE_*，绝不能让网关失效。"""
     env = {**CHALLENGE, **PLATFORM}
     settings = Settings.from_env(env)
-    with pytest.raises(ConfigError) as excinfo:
-        settings.require_gateway()
-    message = str(excinfo.value)
-    assert "sk-challenge" not in message
-    assert "sk-platform" not in message
-    # 消息必须真的点名不一致的字段，否则空消息也能通过上面的「不泄漏」断言
-    assert "api_key" in message
-    assert "model" in message
+    gw = settings.require_gateway()
+    assert gw.family == "challenge"
+    assert gw.api_key == "sk-challenge"
+    assert gw.model == "model-c"
+    warning = settings.gateway_config_warning or ""
+    assert "sk-challenge" not in warning
+    assert "sk-platform" not in warning
+    # 警告必须真的点名不一致的字段
+    assert "api_key" in warning
+    assert "model" in warning
     # 两组 base_url 取值相同（都是 http://gw.invalid/v1），不应被列为 differing
-    assert "base_url" not in message
-    assert settings.gateway is None
+    assert "base_url" not in warning
 
 
 def test_incomplete_challenge_group_falls_through_to_platform() -> None:
@@ -295,7 +297,7 @@ def test_trailing_slash_difference_alone_is_not_a_group_conflict() -> None:
     assert settings.require_gateway().family == "challenge"
 
 
-def test_different_base_urls_still_conflict() -> None:
+def test_different_base_urls_prefer_the_recommended_group() -> None:
     env = {
         **CHALLENGE,
         "PLATFORM_LLM_URL": "http://other.invalid/v1",
@@ -303,9 +305,8 @@ def test_different_base_urls_still_conflict() -> None:
         "PLATFORM_LLM_MODEL": "model-c",
     }
     settings = Settings.from_env(env)
-    with pytest.raises(ConfigError) as excinfo:
-        settings.require_gateway()
-    assert "base_url" in str(excinfo.value)
+    assert settings.require_gateway().base_url == "http://gw.invalid/v1"
+    assert "base_url" in (settings.gateway_config_warning or "")
 
 
 def test_team_name_is_the_local_fallback_for_the_output_directory() -> None:

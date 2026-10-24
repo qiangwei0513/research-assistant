@@ -81,6 +81,7 @@ def create_app(settings: Settings | None = None, *, gateway: Gateway | None = No
             sdk_telemetry=installed,
             gateway_configured=resolved.gateway is not None,
             gateway_family=resolved.gateway.family if resolved.gateway else None,
+            gateway_warning=resolved.gateway_config_warning,
         )
         yield
         flush_telemetry()

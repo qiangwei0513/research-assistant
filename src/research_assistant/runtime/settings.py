@@ -90,6 +90,7 @@ class Settings:
     team: str
     workspace_root: Path
     case_budget_seconds: float
+    gateway_config_warning: str | None = None
     papers_root: Path = DEFAULT_PAPERS_ROOT
     log_level: str = "INFO"
 
@@ -110,6 +111,7 @@ class Settings:
         platform = _read_group(source, PLATFORM_GROUP)
         gateway: GatewaySettings | None = None
         config_error: str | None = None
+        warning: str | None = None
 
         if challenge is not None and platform is not None:
             if all(_comparable(k, challenge[k]) == _comparable(k, platform[k]) for k in challenge):
@@ -124,10 +126,17 @@ class Settings:
                     for k in challenge
                     if _comparable(k, challenge[k]) != _comparable(k, platform[k])
                 )
-                config_error = (
-                    "both CHALLENGE_LLM_* and PLATFORM_LLM_* groups are set but disagree on: "
+                # 平台会同时注入推荐组与兼容组。两组不一致时优先用推荐组继续答题；
+                # 直接禁用网关会让所有模型题归零，代价远大于用其中一组。
+                warning = (
+                    "CHALLENGE_LLM_* and PLATFORM_LLM_* disagree on: "
                     + ", ".join(differing)
-                    + "; per-variable mixing is not allowed"
+                    + "; using the recommended CHALLENGE_LLM_* group"
+                )
+                gateway = GatewaySettings(
+                    family="challenge",
+                    session_id=_clean(source, CHALLENGE_SESSION_VAR),
+                    **challenge,
                 )
         elif challenge is not None:
             gateway = GatewaySettings(
@@ -163,6 +172,7 @@ class Settings:
         return cls(
             gateway=gateway,
             gateway_config_error=config_error,
+            gateway_config_warning=warning,
             # 组委会口径：结果目录用 RESEARCH_WORKSPACE_TEAM，其次本地 TEAM_NAME；
             # TEAM_ID 只是平台遥测身份，绝不能拿来当目录名（会写到平台不读取的路径）
             team=(_clean(source, "RESEARCH_WORKSPACE_TEAM") or _clean(source, "TEAM_NAME") or ""),

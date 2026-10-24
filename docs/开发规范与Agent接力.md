@@ -348,7 +348,7 @@ Dockerfile、pyproject.toml、依赖锁文件
 
 当前 D 指南示例使用 `PLATFORM_LLM_URL / PLATFORM_API_KEY / PLATFORM_LLM_MODEL`；本地旧接入附录使用 `CHALLENGE_LLM_BASE_URL / CHALLENGE_LLM_API_KEY / CHALLENGE_LLM_MODEL / CHALLENGE_SESSION_ID` 和 `X-Session-ID`。线上新总规范删除了旧附录，基础镜像只含部分空占位变量，**不能证明实际会话注入方式**。[D4][L1]
 
-【设计】配置适配器选择一个经联调确认的完整变量组；缺失或两组冲突时报配置错误，不逐变量混合 fallback。保留平台 URL 的完整路径及会话标识；按实际协议传会话头。不能裁剪为自猜 `/v1`、使用个人 API、跨题复用会话或把所有环境变量打印出来。模型名、上下文上限、Token 配额不得硬编码为臆测值。
+【设计】配置适配器整组探测：优先使用平台推荐的 `CHALLENGE_*` 组；两组都完整但取值不一致时，记录字段级 warning 后**继续使用推荐组**（禁用网关会让所有模型题归零），绝不逐变量混合 fallback；只有两组都不完整时才报配置错误。保留平台 URL 的完整路径及会话标识；按实际协议传会话头。不能裁剪为自猜 `/v1`、使用个人 API、跨题复用会话或把所有环境变量打印出来。模型名、上下文上限、Token 配额不得硬编码为臆测值。
 
 【已实现·2026-10-23】`runtime/settings.py` 按上述规则实现：两组各自「必需变量全部非空」才算齐备；恰好一组齐备则用之；两组齐备且值相同用 `CHALLENGE`；两组齐备但值不同报 `ConfigError` 且**只列 differing 的字段名，不列值**；两组都不齐备则 `gateway=None` 并记 `gateway_config_error`。`from_env` 不因网关问题抛异常，以便 `/health` 保持 200（见第 7.4 节理由）；网关错误改由 `require_gateway()` 在解题时抛。预算 `RESEARCH_CASE_BUDGET_SECONDS` 必须是有限正数——`nan` 与任何值比较均为 False，只写 `> 0` 会让它漏过并使整层时间守卫静默失效。
 
