@@ -31,7 +31,7 @@ class FakeOperation:
         self.events = events
 
     def set(self, **attrs: Any) -> None:
-        self.events.append("operation.set")
+        self.events.append("operation.set:" + ",".join(sorted(attrs)))
 
     def result(self, value: Any) -> None:
         self.events.append(f"task.result:{len(value)}")
@@ -189,9 +189,11 @@ def test_transport_task_id_and_trace_context_reach_the_session(
             },
         )
     assert response.status_code == 200
+    # SDK 的 task_id 用平台传输 UUID；case_id 作为 task span 属性单独记录
     assert runtime.events[0] == (
-        f"session.args:A-01:Chat:transport-7:{{'traceparent': '{traceparent}'}}"
+        f"session.args:transport-7:Chat:None:{{'traceparent': '{traceparent}'}}"
     )
+    assert "operation.set:case_id" in runtime.events
 
 
 def test_invalid_body_is_422_and_opens_no_session(fake_sdk: None, base_env: dict[str, str]) -> None:

@@ -65,12 +65,19 @@ def _solve_in_thread(task: Task, context: SolveContext) -> bytes:
 
 @contextmanager
 def trace_current_task(
-    task: Task, headers: Mapping[str, str], session_id: str | None
+    task: Task,
+    headers: Mapping[str, str],
+    *,
+    task_id: str,
+    session_id: str | None,
 ) -> Iterator[Any]:
     with (
-        trace_session(task.case_id, task.function.value, headers, session_id=session_id),
+        trace_session(task_id, task.function.value, headers, session_id=session_id),
         task_span() as operation,
     ):
+        if operation is not None:
+            # task_id 是平台传输 UUID；把题号作为显式属性，两种关联都能查到
+            operation.set(case_id=task.case_id)
         yield operation
 
 
@@ -78,13 +85,9 @@ def _trace_headers(request: Request) -> dict[str, str]:
     return {k: v for k, v in request.headers.items() if k.lower() in TRACE_CONTEXT_HEADERS}
 
 
-def _transport_session_id(request: Request) -> str | None:
-    """传输任务 ID 是平台为本次派发生成的稳定 UUID，用它关联 trace 最可靠。
-
-    `X-Session-ID` 是模型调用的会话标识，二者不能混为一谈；只有在没有传输 ID
-    时才退到它，避免 trace 完全没有会话标识。
-    """
-    return request.headers.get(TRANSPORT_TASK_HEADER) or request.headers.get(SESSION_HEADER)
+def _transport_task_id(request: Request) -> str | None:
+    """平台为本次派发生成的稳定传输 UUID；SDK 的 task_id 应该用它。"""
+    return request.headers.get(TRANSPORT_TASK_HEADER)
 
 
 async def handle_solve(
@@ -117,7 +120,10 @@ async def handle_solve(
     # 只透传 W3C trace context，避免把 Authorization 等敏感头带进 trace
     try:
         with trace_current_task(
-            task, _trace_headers(request), _transport_session_id(request)
+            task,
+            _trace_headers(request),
+            task_id=_transport_task_id(request) or task.case_id,
+            session_id=request.headers.get(SESSION_HEADER),
         ) as operation:
             context = await anyio.to_thread.run_sync(
                 partial(load_task_context, task, settings, gateway=gateway)

@@ -369,6 +369,9 @@ def test_solve_emits_session_task_llm_topology(
             events.append("task.exit")
             return False
 
+        def set(self, **attrs: Any) -> None:
+            events.append("task.set:" + ",".join(sorted(attrs)))
+
         def result(self, value: Any) -> None:
             events.append(f"task.result:{len(value)}")
 
@@ -441,7 +444,13 @@ def test_solve_emits_session_task_llm_topology(
         trace = list(events)
     assert response.status_code == 200, response.text
     # 关闭 lifespan 还会再 flush 一次，这里只断言请求本身的拓扑
-    assert trace[:4] == ["session.enter", "task.enter", "llm.enter", "llm.exit"]
-    assert trace[4].startswith("task.result:"), trace
-    assert int(trace[4].split(":", 1)[1]) > 0
-    assert trace[5:] == ["task.exit", "session.exit", "flush"]
+    assert trace[:5] == [
+        "session.enter",
+        "task.enter",
+        "task.set:case_id",
+        "llm.enter",
+        "llm.exit",
+    ]
+    assert trace[5].startswith("task.result:"), trace
+    assert int(trace[5].split(":", 1)[1]) > 0
+    assert trace[6:] == ["task.exit", "session.exit", "flush"]

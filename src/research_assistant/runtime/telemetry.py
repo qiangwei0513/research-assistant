@@ -94,7 +94,7 @@ def _telemetry_instance() -> Any | None:
 
 @contextmanager
 def trace_session(
-    case_id: str,
+    task_id: str,
     function: str,
     headers: Mapping[str, str] | None = None,
     *,
@@ -102,7 +102,9 @@ def trace_session(
 ) -> Iterator[None]:
     """有 SDK 时进入 Telemetry.session；无 SDK 时为 no-op。
 
-    session_id 用平台请求头里的会话标识（若有），否则由 SDK 生成随机值；
+    task_id 是 SDK 语义里的「运行时任务」：优先用平台传输头 X-Research-Task-ID
+    （清单明确它是独立 UUID，不等于 case_id），缺失时才退到 case_id；
+    case_id 另作为 task span 属性写入。session_id 用平台会话头（若有），否则由 SDK 生成；
     headers 只应含 W3C trace context（traceparent/tracestate），SDK 靠它把本任务的
     span 接到平台这次请求的同一条 trace 上。
     """
@@ -112,9 +114,9 @@ def trace_session(
             yield
         return
     try:
-        manager = instance.session(case_id, function, session_id, None, dict(headers or {}))
+        manager = instance.session(task_id, function, session_id, None, dict(headers or {}))
     except Exception as exc:
-        _LOG.warning("telemetry.session_failed", reason=exc.__class__.__name__, case_id=case_id)
+        _LOG.warning("telemetry.session_failed", reason=exc.__class__.__name__, task_id=task_id)
         with nullcontext():
             yield
         return
@@ -127,7 +129,7 @@ def trace_session(
         manager.__enter__()
     except Exception as exc:
         _LOG.warning(
-            "telemetry.session_enter_failed", reason=exc.__class__.__name__, case_id=case_id
+            "telemetry.session_enter_failed", reason=exc.__class__.__name__, task_id=task_id
         )
         yield
         return
@@ -142,7 +144,7 @@ def trace_session(
             _LOG.warning(
                 "telemetry.session_exit_failed",
                 reason=exit_exc.__class__.__name__,
-                case_id=case_id,
+                task_id=task_id,
             )
             raise exc from None
         if not suppressed:
@@ -152,7 +154,7 @@ def trace_session(
             manager.__exit__(None, None, None)
         except Exception as exc:
             _LOG.warning(
-                "telemetry.session_exit_failed", reason=exc.__class__.__name__, case_id=case_id
+                "telemetry.session_exit_failed", reason=exc.__class__.__name__, task_id=task_id
             )
 
 
