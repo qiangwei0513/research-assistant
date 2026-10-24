@@ -484,3 +484,27 @@ def test_hostile_paper_text_cannot_add_unauthorized_papers(
     )
     result = solve_retrieval(task, context)
     assert [p["filename"] for p in result["papers"]] == ["Hostile_2024_Injection.pdf"]
+
+
+def test_parse_selection_ignores_the_excluded_screening_block() -> None:
+    """两阶段输出：excluded 只用于强制模型先做排除筛查，程序只取 papers。"""
+    content = json.dumps(
+        {
+            "excluded": [{"filename": "off_topic.pdf", "reason": "命中排除条件：与城市热环境无关"}],
+            "papers": [{"filename": "a.pdf", "reason": "正文第 3 节给出同任务基线。"}],
+        },
+        ensure_ascii=False,
+    )
+    assert parse_selection(content, case_id="B-01") == [("a.pdf", "正文第 3 节给出同任务基线。")]
+
+
+def test_prompt_demands_exclusion_screening_before_selection() -> None:
+    """实测教训：模型曾把明确排除的两篇也选进来，误检每篇扣 0.75 分。"""
+    from research_assistant.handlers.retrieval import SYSTEM_PROMPT
+
+    task = retrieval_task()
+    prompt = build_user_prompt(task, [{"filename": "a.pdf"}], [])
+    assert "excluded" in prompt
+    assert "0.75" in SYSTEM_PROMPT
+    assert "宁缺勿滥" in SYSTEM_PROMPT
+    assert "排除" in prompt
