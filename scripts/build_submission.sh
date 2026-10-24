@@ -17,6 +17,12 @@
 # 任何一步失败都会以非零退出码结束，不会留下「构建成功但没验证」的假象。
 set -eu
 
+# docker CLI 可能不在 PATH 上；可用 DOCKER=/absolute/path/docker 覆盖。
+DOCKER="${DOCKER:-docker}"
+if ! command -v "$DOCKER" >/dev/null 2>&1; then
+  DOCKER=/Applications/Docker.app/Contents/Resources/bin/docker
+fi
+
 cd "$(dirname "$0")/.."
 REPO="$(pwd)"
 PARENT="$(dirname "$REPO")"
@@ -26,20 +32,20 @@ IMAGE="research-assistant:p1"
 PORT="${SUBMISSION_PORT:-18099}"
 
 echo "== 1/6 构建 $IMAGE (linux/amd64) =="
-docker build --platform linux/amd64 -t "$IMAGE" . > /tmp/build_submission.log 2>&1 \
+"$DOCKER" build --platform linux/amd64 -t "$IMAGE" . > /tmp/build_submission.log 2>&1 \
   || { echo "构建失败，日志在 /tmp/build_submission.log"; tail -20 /tmp/build_submission.log; exit 1; }
 echo "构建完成"
 
 echo "== 2/6 导出归档并修权限 =="
-docker save -o "$TAR" "$IMAGE"
+"$DOCKER" save -o "$TAR" "$IMAGE"
 chmod 644 "$TAR"
 ln -f "$TAR" "$LINK"
 ls -l "$TAR" | awk '{print "  ", $1, $5, "bytes", $NF}'
 
 echo "== 3/6 往返校验：删标签后从归档重新 load =="
-docker rmi "$IMAGE" > /dev/null 2>&1 || true
-docker load -i "$TAR" | tail -1
-docker inspect "$IMAGE" --format '   arch={{.Architecture}} user={{.Config.User}} workdir={{.Config.WorkingDir}} ports={{.Config.ExposedPorts}} cmd={{.Config.Cmd}}'
+"$DOCKER" rmi "$IMAGE" > /dev/null 2>&1 || true
+"$DOCKER" load -i "$TAR" | tail -1
+"$DOCKER" inspect "$IMAGE" --format '   arch={{.Architecture}} user={{.Config.User}} workdir={{.Config.WorkingDir}} ports={{.Config.ExposedPorts}} cmd={{.Config.Cmd}}'
 
 echo "== 4/6 容器内验证 =="
 if [ ! -f .env.local ]; then
@@ -52,12 +58,12 @@ OUT="$(mktemp -d)"
 chmod 777 "$OUT"
 CONTAINER="submission-check-$$"
 # shellcheck disable=SC2086
-docker run -d --rm --platform linux/amd64 --name "$CONTAINER" -p "$PORT:8080" \
+"$DOCKER" run -d --rm --platform linux/amd64 --name "$CONTAINER" -p "$PORT:8080" \
   $ENV_ARGS -e RESEARCH_WORKSPACE_TEAM=smoke -v "$OUT:/output" "$IMAGE" > /dev/null
-trap 'docker stop "$CONTAINER" > /dev/null 2>&1 || true; rm -rf "$OUT"' EXIT
+trap '"$DOCKER" stop "$CONTAINER" > /dev/null 2>&1 || true; rm -rf "$OUT"' EXIT
 
 i=0
-until docker exec "$CONTAINER" sh -c 'curl -fsS http://localhost:8080/health > /dev/null' 2>/dev/null; do
+until "$DOCKER" exec "$CONTAINER" sh -c 'curl -fsS http://localhost:8080/health > /dev/null' 2>/dev/null; do
   i=$((i+1))
   [ "$i" -ge 40 ] && { echo "   healthcheck 40 次轮询未通过"; exit 1; }
   sleep 0.5
@@ -71,13 +77,13 @@ if [ -n "$ENV_ARGS" ]; then
   printf '%s' "$RESP" > /tmp/submission_check.json
   CODE=$(python3 -c "import json,sys; d=json.load(open('/tmp/submission_check.json')); print(sorted(d)); assert d['case_id']=='A-90'")
   echo "   真实 A 类 /solve: HTTP 200，顶层字段 $CODE"
-  FILE_MD5="$(docker exec "$CONTAINER" md5sum /output/data/smoke/A-90.json | cut -d' ' -f1)"
+  FILE_MD5="$($DOCKER exec "$CONTAINER" md5sum /output/data/smoke/A-90.json | cut -d' ' -f1)"
   RESP_MD5="$(md5 -q /tmp/submission_check.json)"
   [ "$FILE_MD5" = "$RESP_MD5" ] || { echo "   落盘与响应 MD5 不一致: $FILE_MD5 vs $RESP_MD5"; exit 1; }
   echo "   落盘与响应逐字节一致: $FILE_MD5"
-  OWNER="$(docker exec "$CONTAINER" sh -c 'stat -c %U /output/data/smoke/A-90.json 2>/dev/null || ls -l /output/data/smoke/A-90.json | awk "{print \$3}"')"
+  OWNER="$($DOCKER exec "$CONTAINER" sh -c 'stat -c %U /output/data/smoke/A-90.json 2>/dev/null || ls -l /output/data/smoke/A-90.json | awk "{print \$3}"')"
   echo "   结果文件属主: $OWNER"
-  if docker exec "$CONTAINER" sh -c 'grep -rl "sk-7T7U" /output /app 2>/dev/null | grep -q .'; then
+  if "$DOCKER" exec "$CONTAINER" sh -c 'grep -rl "sk-7T7U" /output /app 2>/dev/null | grep -q .'; then
     echo "   凭据泄漏检查: 发现命中，中止"; exit 1
   fi
   echo "   凭据泄漏检查: 无命中"
