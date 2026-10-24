@@ -6,7 +6,7 @@ Read [开发规范与Agent接力](docs/开发规范与Agent接力.md) and [开�
 
 ## Project Structure
 
-`research-assistant/` is the Git repository. P1 application code, tests and `pyproject.toml` are implemented under `src/research_assistant/` and `tests/`; **there is still no Dockerfile and no image build**. Official materials are in sibling `../赛题信息/`; the base image is `../agenthack-base-1.1.1.tar`. Preserve both. Dated public-source snapshots and hashes live in `docs/references/2026-10-23/`. The approved P1 design and its task-by-task plan live in `docs/superpowers/specs/` and `docs/superpowers/plans/`.
+`research-assistant/` is the Git repository. Application code, tests, `pyproject.toml` and a delivery `Dockerfile` are implemented (`src/research_assistant/`, `tests/`, `scripts/`). P1–P6 are locally verified; **R03 platform integration has not been performed**. Official materials are in sibling `../赛题信息/`; the base image is `../agenthack-base-1.1.1.tar`. Preserve both. Dated public-source snapshots and hashes live in `docs/references/2026-10-23/`. The approved P1 design and its task-by-task plan live in `docs/superpowers/specs/` and `docs/superpowers/plans/`.
 
 ## Requirements and Version Control
 
@@ -25,6 +25,14 @@ uv run pytest -m live        # 真实网关 A 类端到端，需要 .env.local �
 uv run ruff check .          # 静态检查
 uv run ruff format --check . # 格式检查
 RESEARCH_WORKSPACE_ROOT=/tmp/ra RESEARCH_WORKSPACE_TEAM=smoke uv run python -m research_assistant
+
+# 交付镜像（需先 docker load ../agenthack-base-1.1.1.tar）
+docker build --platform linux/amd64 -t research-assistant:p1 .
+docker run --rm --platform linux/amd64 --env-file .env.local \
+  -e RESEARCH_WORKSPACE_TEAM=smoke -p 18080:8080 research-assistant:p1
+
+# D 类离线算法验证（需 Docker、python:3.9-slim 与真实网关；隔离容器内执行生成源码）
+uv run python scripts/validate_d_offline.py --case D-01
 ```
 
 Read-only checks that remain valid:
@@ -37,7 +45,9 @@ shasum -a 256 ../agenthack-base-1.1.1.tar
 
 Runtime dependency versions are pinned to what the base image actually ships (`fastapi 0.111.0`, `starlette 0.37.2`, `pydantic 2.8.0`, `uvicorn 0.30.0`, `httpx 0.27.0`, `anyio 4.15.1`, Python 3.11). The one exception is `pypdf==6.21.2`, added in P2 because the image ships **no** PDF library at all — it is pure Python with zero mandatory dependencies, so it needs no platform-specific wheel and builds cleanly for linux/amd64 from a macOS/arm64 host. **The Dockerfile must therefore `pip install`/`uv sync` pypdf at build time**; the image still lacks Pillow, matplotlib, OCR and scikit-learn. `pytest` and `ruff` are dev-group only, so the build must use `uv sync --no-dev`. Also verify at P6 that the image ships the whole transitive closure of the pinned set (`fastapi-cli`, `typer`, `uvloop`, `httptools`, `watchfiles`, `email-validator`, `python-multipart`, `jinja2`), since `uv.lock` resolves them locally.
 
-Credentials live only in the gitignored `.env.local`, never in code, the image, result files or committed tests. There is still no Dockerfile and no image build: local test passes are not image verification and are not platform verification. Keep static, local, image, and platform verification separate.
+Credentials live only in the gitignored `.env.local` and are injected at runtime with `--env-file`; they are never in code, the image, result files or committed tests (verified by grepping the built image). Local test passes are not image verification and are not platform verification: keep static, local, image, and platform evidence separate, and never report a planned check as passing.
+
+**Never pipe a verification command into `tail`** when its exit status matters — `uv run pytest -q | tail -2` exits 0 even when tests fail. Use `uv run pytest -q > log 2>&1; echo $?`.
 
 ## Coding and Runtime Rules
 

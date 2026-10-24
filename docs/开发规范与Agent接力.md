@@ -446,10 +446,10 @@ P1 先消除协议、路径和交付问题；P4 的来源准入尽早联调，�
 | Q02 | 外部平台是否挂载dispatch，实际论文路径、稳定team与输出UID权限 | 镜像接入前 | 分离单题/dispatch模式；临时目录集成测试 |
 | Q03 | health体、非D失败HTTP合同、重试/并发及精确限时 | P1接口冻结/联调 | 类型、路径和正常响应测试；错误分类日志 |
 | Q04 | 正式论文、A/B/C/E任务与完整机器Schema、dispatch示例附件 | 真实任务验收前 | 自建带标签的开发fixture，不能当正式题 |
-| Q05 | 线上是否允许额外隔离自测，D正式全部阶段耗时 | D预算策略定稿前 | 开发机隔离Docker自测、fake helper超时测试 |
+| Q05 | 线上是否允许额外隔离自测，D正式全部阶段耗时。**部分关闭**：自测已改为受限子进程（`-I` 隔离、无 shell、RLIMIT_CPU/AS/NPROC、墙钟超时、cwd 锁定本队 work 目录），不需要 Docker socket；但若平台禁止在 Agent 容器内执行模型源码，这一层必须去掉并接受锁源后无法修复的风险。实测生成耗时 D-01 42.7s / D-02 85.6s / D-05 94.4s | D预算策略定稿前 | 已实现自测与预算预留（55s 正式运行 + 12s 自测 + 5s 落盘） |
 | Q06 | 专家/Token折算、同分/latest-best、截止与上传/申诉限额、正式排名启用 | 发布/解读成绩前 | 完成功能与自动项质量，保留版本和评测证据 |
 | Q07 | 赛题详情 `timeslice_budget=300` 的单位与作用 | 使用该值分配预算前 | 不解释成300秒或Token额度；D按180秒新版要求 |
-| N01 | **镜像无任何 PDF 解析库、无 Pillow、无 OCR**（2026-10-23 只读检查确认）。P2 必须先决定：构建时 `pip install` 纯 Python 解析器（需构建机联网，依赖打进镜像）还是纯标准库自写解析 | **阻塞 P2** | P1 不涉及；可先按「解析器可替换适配器」预留接口，不锁定具体库 |
+| N01 | **已关闭（2026-10-24）**：选 `pypdf==6.21.2`——纯 Python、零强制依赖（crypto/image/full 全是 extras），不需要平台专属 wheel，从 macOS/arm64 构建 linux/amd64 结果一致；已在隔离环境实测能正确提取正文并进入镜像。排除 `pdfminer.six`（需 `cryptography>=36`，C 扩展）与 `PyMuPDF 2.0`（AGPL-3.0/商业双授权，且拖 onnxruntime/networkx 等重依赖）。扫描件 OCR 仍未实现，按「资源允许时」留待后续 | — | 已实现；扫描件如实记为 `EMPTY` 并给出可见原因 |
 | N02 | SDK telemetry 的 OTEL 端点由谁注入、平台是否真的消费这些 trace、是否影响 30% 专家/Token 复核 | 发布前 | 已做可降级实现：本地无 `agenthack` 包时全部入口 no-op，遥测失败绝不影响答案返回 |
 
 当前公开快照已足以确认 v3 题量、输出合同、C/E 分档和三道 D 规则。上述未决项不意味着要等待所有平台信息才开始模块开发；仅对依赖该信息的联调和最终交付保留限制。
@@ -494,7 +494,19 @@ docker run --rm -i --pull=never --platform linux/amd64 \
 
 ### 13.3 尚不存在的项目命令
 
-当前没有项目 `pytest`、Ruff、启动脚本或 Dockerfile。P1 建立后再固定测试/格式化/启动/构建命令并记录实测结果；不能复制文档中的设想宣称命令已通过。旧材料的 `参赛者模拟/validate_submission.py` 未包含在本地包中，不能当现成脚本使用。
+【已实现·2026-10-24】项目命令已齐备，全部有实测结果（见接力记录的验证表）：
+`uv sync`、`uv run pytest`（629 passed）、`uv run pytest -m live`（真实网关）、
+`uv run ruff check .` / `ruff format --check .`、`uv run python -m research_assistant`、
+`docker build --platform linux/amd64 -t research-assistant:p1 .`、
+`uv run python scripts/validate_d_offline.py --case D-01|D-02|D-05`。
+
+D 类离线算法验证使用与 §13.2 相同的隔离参数（`--network none --read-only --user 65534:65534
+--cap-drop ALL --security-opt no-new-privileges --cpus 1 --memory 1024m --ulimit cpu=20:20`，
+`python:3.9-slim`，`signal.alarm(20)`），实测 D-01 3/3、D-02 3/3、D-05 7/7 个公开样例通过。
+这仍**不是**平台来源准入，也不是可信执行结果。
+
+旧材料的 `参赛者模拟/validate_submission.py` 未包含在本地包中，不能当现成脚本使用。
+注意：验证命令不要用 `cmd | tail` 收尾——管道会吞掉 pytest 的非零退出码。
 
 ## 14. 来源导航
 
