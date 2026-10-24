@@ -55,9 +55,16 @@ def _verify_materials(task: Task, workspace: WorkspacePaths) -> frozenset[str]:
     allowed: set[str] = set()
     for material in task.materials:
         path = workspace.paper(material)
-        if not path.is_file():
+        # is_file() 只对 ENOENT/ENOTDIR/EBADF/ELOOP 静默；ENAMETOOLONG 等会抛 OSError。
+        # 那是材料问题，必须落在 422，不能让裸 OSError 逃成笼统 500。
+        try:
+            present = path.is_file()
+        except OSError:
+            present = False
+        if not present:
             raise MaterialUnavailableError(
-                f"authorized material is not available: {material}", case_id=task.case_id
+                f"authorized material is not available: {material!r:.64}",
+                case_id=task.case_id,
             )
         allowed.add(material)
     return frozenset(allowed)

@@ -11,6 +11,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from research_assistant.errors import DispatchValidationError
@@ -19,7 +20,9 @@ from research_assistant.runtime.paths import WorkspacePaths
 RULES_VERSION_V3 = "research-assistant-objective-v3"
 DISPATCH_POLICY_VERSION_V3 = "research-assistant-dispatch-v3"
 SELECTION_MODE_V3 = "random_a_fixed_bcde"
-QUOTA_V3: Mapping[str, int] = {"A": 1, "B": 3, "C": 2, "D": 3, "E": 2}
+# 1/3/2/3/2 是评分关键常量；用 MappingProxyType 冻结，
+# 与 task.SCHEMA_REF_BY_FUNCTION / results.ALLOWED_TOP_LEVEL_FIELDS 一致。
+QUOTA_V3: Mapping[str, int] = MappingProxyType({"A": 1, "B": 3, "C": 2, "D": 3, "E": 2})
 TOTAL_CASES_V3 = 11
 SCHEMA_VERSION_V3 = 3
 

@@ -7,12 +7,14 @@ constraints 是对象），与赛题一的八字段输入（constraints 是字�
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Any
+from uuid import uuid4
 
 import anyio.to_thread
 from fastapi import FastAPI, Request
@@ -59,14 +61,21 @@ def _workspace_writable(settings: Settings) -> bool:
 
     队伍标识未注入时仍报健康：否则平台一旦用了我们没预料到的注入方式，
     基础镜像的 healthcheck 会连续失败、整轮评测根本起不来，代价远大于单题报配置错误。
+
+    探针文件名必须唯一：Docker 自身的 HEALTHCHECK 是串行的，但平台的就绪探针、
+    负载均衡器或运维 curl 可能并发，固定文件名会让后一个探测在 unlink 时抛
+    FileNotFoundError，被当成「不可写」而误报 503。
     """
+    probe = settings.workspace_root / f"{HEALTH_PROBE_NAME}-{os.getpid()}-{uuid4().hex}"
     try:
         settings.workspace_root.mkdir(parents=True, exist_ok=True)
-        probe = settings.workspace_root / HEALTH_PROBE_NAME
         probe.write_bytes(b"")
-        probe.unlink()
     except OSError:
         return False
+    finally:
+        # 清不掉探针不影响可写性结论；它在 data/<team>/ 之外，不会污染结果
+        with contextlib.suppress(OSError):
+            probe.unlink(missing_ok=True)
     return True
 
 

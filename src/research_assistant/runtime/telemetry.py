@@ -97,12 +97,42 @@ def trace_session(
         with nullcontext():
             yield
         return
+    # 手动进出上下文管理器，而不是用 `with manager: yield`。
+    # 原因：SDK 的 session().__exit__ 自身可能抛异常（OTEL collector 不可达、导出超时、
+    # 关闭竞态）。用 with 包住 yield 时，那个异常会从 trace_session 逃出、越过 api 的
+    # ResearchAssistantError 分支、变成 HTTP 500——而此时答案早已算出并落盘校验通过，
+    # 等于静默丢弃一个正确结果。spec §5.6 要求遥测失败绝不影响答案返回。
     try:
-        with manager:
-            yield
-    except Exception:
-        # 业务异常照常向上抛；只有遥测自身的异常在此吞掉
-        raise
+        manager.__enter__()
+    except Exception as exc:
+        _LOG.warning(
+            "telemetry.session_enter_failed", reason=exc.__class__.__name__, case_id=case_id
+        )
+        yield
+        return
+
+    try:
+        yield
+    except BaseException as exc:
+        # 业务异常照常向上抛；只有 __exit__ 自身的失败被吞掉，且改抛原业务异常
+        try:
+            suppressed = manager.__exit__(type(exc), exc, exc.__traceback__)
+        except Exception as exit_exc:
+            _LOG.warning(
+                "telemetry.session_exit_failed",
+                reason=exit_exc.__class__.__name__,
+                case_id=case_id,
+            )
+            raise exc from None
+        if not suppressed:
+            raise
+    else:
+        try:
+            manager.__exit__(None, None, None)
+        except Exception as exc:
+            _LOG.warning(
+                "telemetry.session_exit_failed", reason=exc.__class__.__name__, case_id=case_id
+            )
 
 
 def flush_telemetry() -> None:
