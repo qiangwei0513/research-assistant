@@ -125,31 +125,44 @@ def test_code_fenced_model_output_is_still_parsed(base_env: dict[str, str]) -> N
 
 
 def test_non_json_model_output_is_a_gateway_error(base_env: dict[str, str]) -> None:
-    context, _ = context_with(base_env, ["光照确实很重要，我认为……"])
+    # 两条都非法：第一条触发重问，第二条仍非法才向上抛
+    context, _ = context_with(base_env, ["光照确实很重要，我认为……", "还是自由文本"])
     with pytest.raises(GatewayError, match="JSON"):
         solve_chat(chat_task(), context)
 
 
 def test_json_array_model_output_is_rejected(base_env: dict[str, str]) -> None:
-    context, _ = context_with(base_env, ['[{"answer": "a"}]'])
+    context, _ = context_with(base_env, ['[{"answer": "a"}]', '[{"answer": "a"}]'])
     with pytest.raises(GatewayError, match="object"):
         solve_chat(chat_task(), context)
 
 
 def test_missing_clarifying_question_is_rejected(base_env: dict[str, str]) -> None:
-    context, _ = context_with(base_env, [json.dumps({"answer": "a"}, ensure_ascii=False)])
+    context, _ = context_with(
+        base_env,
+        [
+            json.dumps({"answer": "a"}, ensure_ascii=False),
+            json.dumps({"answer": "a"}, ensure_ascii=False),
+        ],
+    )
     with pytest.raises(GatewayError, match="clarifying_question"):
         solve_chat(chat_task(), context)
 
 
 def test_blank_answer_is_rejected(base_env: dict[str, str]) -> None:
-    context, _ = context_with(base_env, [model_json(answer="   ")])
+    context, _ = context_with(base_env, [model_json(answer="   "), model_json(answer="   ")])
     with pytest.raises(GatewayError, match="answer"):
         solve_chat(chat_task(), context)
 
 
 def test_non_string_answer_is_rejected(base_env: dict[str, str]) -> None:
-    context, _ = context_with(base_env, [json.dumps({"answer": 1, "clarifying_question": "q"})])
+    context, _ = context_with(
+        base_env,
+        [
+            json.dumps({"answer": 1, "clarifying_question": "q"}),
+            json.dumps({"answer": 1, "clarifying_question": "q"}),
+        ],
+    )
     with pytest.raises(GatewayError, match="answer"):
         solve_chat(chat_task(), context)
 
@@ -158,6 +171,27 @@ def test_parse_chat_payload_returns_a_tuple() -> None:
     answer, question = parse_chat_payload(model_json(), case_id="A-01")
     assert answer == "光照强度提高会加快光合作用。"
     assert question == "你研究的是哪种室内植物？"
+
+
+def test_malformed_output_is_retried_once_and_then_succeeds(base_env: dict[str, str]) -> None:
+    """实测真实网关约 5 次里有 1 次不按 JSON 契约输出；一次有界重问即可救回整题。"""
+    context, fake = context_with(base_env, ["光照确实很重要，我认为……", model_json()])
+    result = solve_chat(chat_task(), context)
+    assert result["answer"] == "光照强度提高会加快光合作用。"
+    assert [stage for stage, _ in fake.calls] == ["chat.completion", "chat.completion.retry"]
+    # 重问时把上一次的违规输出与原因一起回传给同一会话
+    retry_messages = fake.calls[1][1]
+    assert retry_messages[-1].role == "user"
+    assert "不符合要求" in retry_messages[-1].content
+    assert retry_messages[-2].role == "assistant"
+
+
+def test_retry_is_not_unbounded(base_env: dict[str, str]) -> None:
+    """最多两次：第二次仍违规则如实报错，不得无限重问。"""
+    context, fake = context_with(base_env, ["自由文本一", "自由文本二", model_json()])
+    with pytest.raises(GatewayError):
+        solve_chat(chat_task(), context)
+    assert len(fake.calls) == 2
 
 
 def test_gateway_failure_propagates(base_env: dict[str, str]) -> None:

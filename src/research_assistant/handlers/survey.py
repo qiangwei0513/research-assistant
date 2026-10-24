@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from research_assistant.contracts.results import survey_result
+from research_assistant.contracts.results import MIN_BODY_CHARACTERS, survey_result
 from research_assistant.contracts.task import Task
 from research_assistant.documents.evidence import (
     EvidencePack,
@@ -23,8 +23,9 @@ from research_assistant.documents.evidence import (
     render_unusable,
 )
 from research_assistant.documents.extractor import extract_documents
-from research_assistant.errors import MaterialUnavailableError
+from research_assistant.errors import GatewayError, MaterialUnavailableError
 from research_assistant.runtime.gateway import Message
+from research_assistant.runtime.modelcall import complete_parsed
 from research_assistant.validation.citations import (
     CitationAnalysis,
     analyze_citations,
@@ -88,6 +89,17 @@ def build_user_prompt(task: Task, pack: EvidencePack) -> str:
     return "\n\n".join(parts)
 
 
+def _parse_markdown(content: str) -> str:
+    """剥掉模型可能自行添加的代码围栏，并守住正文长度下限。"""
+    stripped = _strip_code_fence(content)
+    if len(stripped.strip()) < MIN_BODY_CHARACTERS:
+        raise GatewayError(
+            f"survey body was {len(stripped.strip())} characters, below the required "
+            f"{MIN_BODY_CHARACTERS}"
+        )
+    return stripped
+
+
 def _strip_code_fence(content: str) -> str:
     text = content.strip()
     if not text.startswith("```"):
@@ -141,10 +153,19 @@ def solve_survey(task: Task, context: SolveContext) -> Mapping[str, Any]:
         Message(role="system", content=SYSTEM_PROMPT),
         Message(role="user", content=build_user_prompt(task, pack)),
     )
-    response = context.gateway.complete(
-        messages, context=context, stage=STAGE_GENERATE, max_tokens=MAX_TOKENS
+    # 正文至少 800 字符是硬合同，过短会让整题非法；一次有界重问远比 0 分便宜
+    markdown, response = complete_parsed(
+        context.gateway,
+        messages,
+        context=context,
+        stage=STAGE_GENERATE,
+        requirement=(
+            f"完整的 Markdown 综述正文，去掉首尾空白后至少 {TARGET_BODY_CHARACTERS} 字符，"
+            "含数字引用与结尾的 ## 参考文献"
+        ),
+        parse=_parse_markdown,
+        max_tokens=MAX_TOKENS,
     )
-    markdown = _strip_code_fence(response.content)
     analysis = analyze_citations(markdown, allowed)
     _log_analysis(context, analysis, "generate")
 
@@ -204,6 +225,9 @@ def solve_survey(task: Task, context: SolveContext) -> Mapping[str, Any]:
         case_id=task.case_id,
         path=relative,
         characters=len(markdown),
+        prompt_tokens=response.usage.prompt_tokens,
+        completion_tokens=response.usage.completion_tokens,
+        finish_reason=response.finish_reason,
         distinct_cited_papers=len(analysis.cited_filenames),
         remaining_issues=issue_summary(analysis),
     )

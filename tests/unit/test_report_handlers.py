@@ -239,7 +239,16 @@ def test_survey_does_not_call_the_model_twice_when_the_draft_is_clean(
 def test_survey_runs_one_repair_round_when_citations_have_problems(
     base_env: dict[str, str], five_papers: list[str], papers_root: Path, tmp_workspace: Path
 ) -> None:
-    broken = "# 综述\n\n正文完全没有引用。\n\n## 参考文献\n\n"
+    # broken 够长（过长度闸）但引文有悬空编号，才能测到引文修复轮而不是长度重问
+    filler = long_sentence("用来把初稿撑过 800 字符下限的填充陈述")
+    broken = (
+        "# 综述\n\n"
+        + (filler + "。") * 20
+        + "\n\n"
+        + cited("引用了一个参考文献里不存在的编号", 9)
+        + "\n\n## 参考文献\n\n"
+        f"[1] 张三. 标题. {P1}\n"
+    )
     task = survey_task(five_papers)
     fake = FakeGateway([broken, good_survey_markdown()])
     env = {
@@ -429,7 +438,11 @@ def test_idea_without_materials_raises(
 def test_idea_runs_a_repair_round_when_sections_are_missing(
     base_env: dict[str, str], five_papers: list[str], papers_root: Path, tmp_workspace: Path
 ) -> None:
-    incomplete = "# 方案\n\n" + long_sentence("只写了动机，缺了其余全部小节") + "\n"
+    incomplete = (
+        "# 方案\n\n"
+        + (long_sentence("只写了动机与背景，缺了其余全部要求的小节") + "。") * 24
+        + "\n"
+    )
     task = idea_task(five_papers)
     fake = FakeGateway([incomplete, good_idea_markdown()])
     env = {

@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from research_assistant.contracts.results import idea_result
+from research_assistant.contracts.results import MIN_BODY_CHARACTERS, idea_result
 from research_assistant.contracts.task import Task
 from research_assistant.documents.evidence import (
     EvidencePack,
@@ -26,8 +26,9 @@ from research_assistant.documents.evidence import (
     render_unusable,
 )
 from research_assistant.documents.extractor import extract_documents
-from research_assistant.errors import MaterialUnavailableError
+from research_assistant.errors import GatewayError, MaterialUnavailableError
 from research_assistant.runtime.gateway import Message
+from research_assistant.runtime.modelcall import complete_parsed
 from research_assistant.runtime.persistence import write_text_verified
 from research_assistant.validation.citations import analyze_citations, issue_summary
 
@@ -234,6 +235,17 @@ def build_user_prompt(task: Task, pack: EvidencePack) -> str:
     return "\n\n".join(parts)
 
 
+def _parse_markdown(content: str) -> str:
+    """剥掉代码围栏并守住正文长度下限（至少 800 字符是硬合同）。"""
+    stripped = _strip_code_fence(content)
+    if len(stripped.strip()) < MIN_BODY_CHARACTERS:
+        raise GatewayError(
+            f"idea body was {len(stripped.strip())} characters, below the required "
+            f"{MIN_BODY_CHARACTERS}"
+        )
+    return stripped
+
+
 def _strip_code_fence(content: str) -> str:
     text = content.strip()
     if not text.startswith("```"):
@@ -256,16 +268,21 @@ def solve_idea(task: Task, context: SolveContext) -> Mapping[str, Any]:
         )
 
     allowed = frozenset(pack.filenames)
-    response = context.gateway.complete(
+    markdown, response = complete_parsed(
+        context.gateway,
         (
             Message(role="system", content=SYSTEM_PROMPT),
             Message(role="user", content=build_user_prompt(task, pack)),
         ),
         context=context,
         stage=STAGE_GENERATE,
+        requirement=(
+            f"完整的 Markdown 研究方案正文，去掉首尾空白后至少 {TARGET_BODY_CHARACTERS} 字符，"
+            "含全部要求的小节与结尾的 ## 参考文献"
+        ),
+        parse=_parse_markdown,
         max_tokens=MAX_TOKENS,
     )
-    markdown = _strip_code_fence(response.content)
     check = check_idea_report(markdown)
     citations = analyze_citations(markdown, allowed)
     _log_check(context, check, citations, "generate")
@@ -318,6 +335,9 @@ def solve_idea(task: Task, context: SolveContext) -> Mapping[str, Any]:
         case_id=task.case_id,
         path=relative,
         characters=len(markdown),
+        prompt_tokens=response.usage.prompt_tokens,
+        completion_tokens=response.usage.completion_tokens,
+        finish_reason=response.finish_reason,
         technical_characters=check.technical_characters,
         remaining_problems=len(check.problems),
     )

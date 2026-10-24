@@ -14,6 +14,7 @@ from research_assistant.contracts.results import chat_result
 from research_assistant.contracts.task import Task
 from research_assistant.errors import GatewayError
 from research_assistant.runtime.gateway import MIN_MODEL_SECONDS, Message
+from research_assistant.runtime.modelcall import complete_parsed
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型检查，避免与 context 循环导入
     from research_assistant.runtime.context import SolveContext
@@ -90,10 +91,19 @@ def solve_chat(task: Task, context: SolveContext) -> Mapping[str, Any]:
         Message(role="system", content=CHAT_SYSTEM_PROMPT),
         Message(role="user", content=build_chat_user_prompt(task)),
     )
-    response = context.gateway.complete(
-        messages, context=context, stage=STAGE, max_tokens=CHAT_MAX_TOKENS
+    # 模型偶尔不按 JSON 契约输出（实测约 5 次里 1 次），一次有界重问远比整题 0 分便宜
+    (answer, question), response = complete_parsed(
+        context.gateway,
+        messages,
+        context=context,
+        stage=STAGE,
+        requirement=(
+            "一个 JSON 对象，键恰好为 answer 与 clarifying_question，两项都是非空字符串，"
+            "不要代码围栏、不要额外字段"
+        ),
+        parse=lambda content: parse_chat_payload(content, case_id=task.case_id),
+        max_tokens=CHAT_MAX_TOKENS,
     )
-    answer, question = parse_chat_payload(response.content, case_id=task.case_id)
     context.log.info(
         "chat.completed",
         answer_characters=len(answer),

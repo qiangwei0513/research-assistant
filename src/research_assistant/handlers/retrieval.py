@@ -27,6 +27,7 @@ from research_assistant.documents.retrieval import (
 )
 from research_assistant.errors import GatewayError
 from research_assistant.runtime.gateway import Message
+from research_assistant.runtime.modelcall import complete_parsed
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型检查，避免与 context 循环导入
     from research_assistant.runtime.context import SolveContext
@@ -243,10 +244,18 @@ def solve_retrieval(task: Task, context: SolveContext) -> Mapping[str, Any]:
         Message(role="system", content=SYSTEM_PROMPT),
         Message(role="user", content=build_user_prompt(task, summaries, unusable)),
     )
-    response = context.gateway.complete(
-        messages, context=context, stage=STAGE, max_tokens=MAX_TOKENS
+    (_, selections), response = complete_parsed(
+        context.gateway,
+        messages,
+        context=context,
+        stage=STAGE,
+        requirement=(
+            '一个 JSON 对象，形如 {"papers": [{"filename": "...", "reason": "..."}]}，'
+            "filename 必须原样复制候选清单中的名字，没有相关候选时 papers 为空数组"
+        ),
+        parse=lambda content: (None, parse_selection(content, case_id=task.case_id)),
+        max_tokens=MAX_TOKENS,
     )
-    selections = parse_selection(response.content, case_id=task.case_id)
     papers = _map_to_authorized(selections, authorized, case_id=task.case_id, log=context.log)
 
     context.log.info(
