@@ -201,3 +201,32 @@ def test_invalid_body_is_422_and_opens_no_session(fake_sdk: None, base_env: dict
     assert response.status_code == 422
     assert response.json()["error"]["type"] == "TaskContractError"
     assert runtime.events == []
+
+
+def test_main_uses_the_official_runtime_when_the_sdk_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from research_assistant import __main__ as entry
+    from research_assistant.runtime import official_runtime
+
+    monkeypatch.setattr(entry, "_sdk_available", lambda: True)
+    monkeypatch.delenv("RESEARCH_HOST", raising=False)
+    monkeypatch.delenv("RESEARCH_PORT", raising=False)
+    called: dict[str, Any] = {}
+    monkeypatch.setattr(
+        official_runtime, "run_official", lambda host, port: called.update(host=host, port=port)
+    )
+    entry.main()
+    assert called == {"host": "0.0.0.0", "port": 8080}
+
+
+def test_main_falls_back_to_the_dev_app_without_the_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from research_assistant import __main__ as entry
+
+    monkeypatch.setattr(entry, "_sdk_available", lambda: False)
+    called: dict[str, Any] = {}
+    monkeypatch.setattr(entry.uvicorn, "run", lambda app, **kwargs: called.update(app=app))
+    entry.main()
+    assert "app" in called

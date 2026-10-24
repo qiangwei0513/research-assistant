@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 
 import uvicorn
@@ -17,17 +18,22 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8080
 
 
+def _sdk_available() -> bool:
+    try:
+        return importlib.util.find_spec("agenthack") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def main() -> None:
     host = os.environ.get("RESEARCH_HOST", DEFAULT_HOST)
     port = int(os.environ.get("RESEARCH_PORT", DEFAULT_PORT))
-    try:
-        from research_assistant.runtime.official_runtime import run_official
-    except ImportError as exc:
-        JsonLogger("api").warning(
-            "service.official_runtime_unavailable", reason=exc.__class__.__name__
-        )
+    if not _sdk_available():
+        JsonLogger("api").warning("service.official_runtime_unavailable", reason="no agenthack")
         uvicorn.run(create_app(), host=host, port=port, log_level="warning")
         return
+    from research_assistant.runtime.official_runtime import run_official
+
     run_official(host=host, port=port)
 
 

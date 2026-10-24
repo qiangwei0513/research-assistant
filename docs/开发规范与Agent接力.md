@@ -58,7 +58,7 @@
 | 模型配置 | 本地旧接入附录 `CHALLENGE_*`；新 D 示例 `PLATFORM_*` | 存在真实接入差异，见第 7.3 节；不能拼凑配置或擅用个人接口 |
 | 镜像目录 | 基础镜像默认 `/app` | 当前赛题交付工作目录 `/output`；应用代码可保留 `/app` |
 | 排名 | 旧文档描述完整初赛榜 | 当前公开详情仍称正式总分/排名等待复核与完整性规则冻结；不承诺已具备排名资格 |
-| HTTP 服务骨架 | 基础镜像预装 `agenthack_sdk 1.1.1`，其 `AgentRuntime` 自带 `/health`+`/solve` | **不得复用**：SDK 的 `/solve` 是通用赛题合同（`TaskRequest{task_id,task_type,input:dict,constraints:{timeout_ms}}` → `TaskResponse{task_id,status,output,metadata}`），与赛题一八字段输入（`constraints` 是**字符串数组**）和「只输出该类型允许的顶层字段」直接冲突，请求会 422、响应会多出禁用键。自建 FastAPI app，只复用 `install_all_interceptors()` 与 `Telemetry.session()`（可选导入，离镜像降级为 no-op） |
+| HTTP 服务骨架 | 基础镜像预装 `agenthack_sdk 1.1.1`；组委会要求镜像入口执行 `AgentRuntime(MyAgent()).run()` | **必须用官方运行时启动**，但**不能直接用**其通用 `/solve`：SDK 路由是 `TaskRequest{task_id,task_type,input:dict,constraints:{timeout_ms}}` → `TaskResponse{task_id,status,output,metadata}`，与赛题一八字段输入（`constraints` 是**字符串数组**）和「只输出该类型允许的顶层字段」直接冲突，请求会 422、响应会多出禁用键。做法见 `runtime/official_runtime.py`：保留官方 app、`/health`、lifespan 与 `Telemetry` 实例，只替换 `/solve` 路由并注入 `runtime.telemetry`（禁止二次构造 Telemetry）；开发环境无 SDK 时 `api.create_app` 作为降级入口，两条路径共用 `runtime/http_solve.py` |
 
 注意：[S2] 同一文件保留历史 D 段落，必须继续读到末尾“当前D类协议：layered-d-v3”。不能取前面的 6/6/7 检查点、四函数或 12+8 描述覆盖末尾修订。`20261020-source-v1` 是材料版本，`layered-d-v3` 是算法版本，`d-model-source-v1` 是来源准入版本，三者不能混为一谈。
 

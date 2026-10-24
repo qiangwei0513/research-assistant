@@ -308,15 +308,20 @@ def test_different_base_urls_still_conflict() -> None:
     assert "base_url" in str(excinfo.value)
 
 
-def test_team_id_is_used_when_explicit_team_variable_is_absent() -> None:
-    """SDK 遥测用 TEAM_ID 标识队伍；平台只注入它时不能导致所有题失败。"""
-    settings = Settings.from_env({**CHALLENGE, "TEAM_ID": "team-from-platform"})
-    assert settings.team == "team-from-platform"
+def test_team_name_is_the_local_fallback_for_the_output_directory() -> None:
+    """组委会口径：目录取 RESEARCH_WORKSPACE_TEAM，其次 TEAM_NAME。"""
+    settings = Settings.from_env({**CHALLENGE, "TEAM_NAME": "local-team-name"})
+    assert settings.team == "local-team-name"
     assert Settings.from_env(CHALLENGE).team == ""
 
 
-def test_explicit_team_variable_wins_over_team_id() -> None:
+def test_team_id_is_not_used_as_the_output_directory() -> None:
+    """TEAM_ID 只用于遥测身份；拿它当目录会写到平台不读取的路径。"""
+    assert Settings.from_env({**CHALLENGE, "TEAM_ID": "platform-team-id"}).team == ""
+
+
+def test_explicit_team_variable_wins_over_team_name() -> None:
     settings = Settings.from_env(
-        {**CHALLENGE, "RESEARCH_WORKSPACE_TEAM": "explicit-team", "TEAM_ID": "sdk-team"}
+        {**CHALLENGE, "RESEARCH_WORKSPACE_TEAM": "explicit-team", "TEAM_NAME": "local-team"}
     )
     assert settings.team == "explicit-team"

@@ -163,9 +163,9 @@ class Settings:
         return cls(
             gateway=gateway,
             gateway_config_error=config_error,
-            # TEAM_ID 是 SDK 遥测约定的队伍标识；平台若不注入 RESEARCH_WORKSPACE_TEAM，
-            # 用它兜底，否则结果目录无从确定、每道题都会失败
-            team=(_clean(source, "RESEARCH_WORKSPACE_TEAM") or _clean(source, "TEAM_ID") or ""),
+            # 组委会口径：结果目录用 RESEARCH_WORKSPACE_TEAM，其次本地 TEAM_NAME；
+            # TEAM_ID 只是平台遥测身份，绝不能拿来当目录名（会写到平台不读取的路径）
+            team=(_clean(source, "RESEARCH_WORKSPACE_TEAM") or _clean(source, "TEAM_NAME") or ""),
             workspace_root=Path(
                 _clean(source, "RESEARCH_WORKSPACE_ROOT") or DEFAULT_WORKSPACE_ROOT
             ),
