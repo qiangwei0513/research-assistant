@@ -13,8 +13,6 @@ def test_every_function_has_a_handler() -> None:
 
 def test_unimplemented_categories_raise_with_their_phase() -> None:
     for case_id, function, phase in [
-        ("C-01", TaskFunction.SURVEY, "P3"),
-        ("E-01", TaskFunction.IDEA, "P3"),
         ("D-01", TaskFunction.REPRODUCTION, "P4"),
     ]:
         handler = HANDLER_BY_FUNCTION[function]
@@ -46,3 +44,11 @@ def test_retrieval_is_wired_to_the_real_handler() -> None:
     from research_assistant.handlers.retrieval import solve_retrieval
 
     assert HANDLER_BY_FUNCTION[TaskFunction.LITERATURE_RETRIEVAL] is solve_retrieval
+
+
+def test_survey_and_idea_are_wired_to_real_handlers() -> None:
+    from research_assistant.handlers.idea import solve_idea
+    from research_assistant.handlers.survey import solve_survey
+
+    assert HANDLER_BY_FUNCTION[TaskFunction.SURVEY] is solve_survey
+    assert HANDLER_BY_FUNCTION[TaskFunction.IDEA] is solve_idea

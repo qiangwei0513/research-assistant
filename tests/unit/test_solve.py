@@ -57,12 +57,12 @@ def test_solve_returns_the_chat_result(base_env: dict[str, str]) -> None:
 def test_solve_routes_by_function_not_by_schema_ref(base_env: dict[str, str]) -> None:
     payload = {
         **chat_payload(),
-        "case_id": "C-01",
-        "function": "Survey",
-        "output_schema_ref": "Survey",
+        "case_id": "D-01",
+        "function": "Reproduction",
+        "output_schema_ref": "Reproduction",
     }
     task, context = context_for(base_env, payload, [])
-    with pytest.raises(HandlerNotImplemented, match="P3"):
+    with pytest.raises(HandlerNotImplemented, match="P4"):
         solve(task, context)
 
 
