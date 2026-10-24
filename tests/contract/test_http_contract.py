@@ -198,7 +198,7 @@ def test_two_requests_are_independent(client: TestClient) -> None:
 
 @pytest.mark.parametrize(
     ("case_id", "phase"),
-    [("B-01", "P2"), ("C-01", "P3"), ("D-01", "P4"), ("E-01", "P3")],
+    [("C-01", "P3"), ("D-01", "P4"), ("E-01", "P3")],
 )
 def test_unimplemented_categories_route_and_report_501(
     base_env: dict[str, str], case_id: str, phase: str
@@ -215,11 +215,21 @@ def test_unimplemented_categories_route_and_report_501(
 def test_routing_error_precedes_config_error_when_gateway_missing(
     base_env: dict[str, str],
 ) -> None:
-    """没有网关时 B 类应报 501（未实现）而不是 500（配置缺失）——前者更有诊断价值。"""
+    """没有网关时 C 类应报 501（未实现）而不是 500（配置缺失）——前者更有诊断价值。"""
     env = {k: v for k, v in base_env.items() if not k.startswith("CHALLENGE_LLM")}
     with TestClient(create_app(Settings.from_env(env), gateway=None)) as test_client:
-        response = test_client.post("/solve", json=payload("B-01"))
+        response = test_client.post("/solve", json=payload("C-01"))
     assert response.status_code == 501
+
+
+def test_retrieval_with_no_materials_returns_an_empty_papers_array(
+    base_env: dict[str, str],
+) -> None:
+    """B 类没有可用材料时，空数组是合法答案，不得报 501 也不得凑篇数。"""
+    with build_client(base_env, []) as test_client:
+        response = test_client.post("/solve", json=payload("B-01"))
+    assert response.status_code == 200
+    assert response.json() == {"case_id": "B-01", "papers": []}
 
 
 # --- /solve 错误映射 ---
