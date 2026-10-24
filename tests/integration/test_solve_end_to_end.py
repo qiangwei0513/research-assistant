@@ -92,37 +92,37 @@ def test_a_mounted_dispatch_is_accepted_and_does_not_block_solving(
         assert client.post("/solve", json=chat_payload()).status_code == 200
 
 
-def test_a_tampered_question_file_blocks_solving(
+def test_a_tampered_current_question_is_logged_not_blocking(
     base_env: dict[str, str], mounted_dispatch: None, tmp_workspace: Path
 ) -> None:
-    (tmp_workspace / "data" / TEAM / "assigned" / "B-01.json").write_text(
-        '{"case_id": "B-01", "tampered": true}', encoding="utf-8"
+    """平台自己会核对 assigned 哈希；本地只告警，不能因此拒答。"""
+    (tmp_workspace / "data" / TEAM / "assigned" / "A-100.json").write_text(
+        '{"case_id": "A-100", "tampered": true}', encoding="utf-8"
     )
     with build_client(base_env, [answer_json()]) as client:
         response = client.post("/solve", json=chat_payload())
-    assert response.status_code == 422
-    assert response.json()["error"]["type"] == "DispatchValidationError"
+    assert response.status_code == 200
 
 
-def test_a_missing_question_file_blocks_solving(
+def test_a_missing_question_file_is_logged_not_blocking(
     base_env: dict[str, str], mounted_dispatch: None, tmp_workspace: Path
 ) -> None:
-    (tmp_workspace / "data" / TEAM / "assigned" / "E-02.json").unlink()
+    """Single 模式可能只挂当前题；缺别的题文件更不能拦当前题。"""
+    for name in ("A-100.json", "E-02.json"):
+        (tmp_workspace / "data" / TEAM / "assigned" / name).unlink()
     with build_client(base_env, [answer_json()]) as client:
         response = client.post("/solve", json=chat_payload())
-    assert response.status_code == 422
-    assert response.json()["error"]["type"] == "DispatchValidationError"
+    assert response.status_code == 200
 
 
-def test_a_dispatch_for_another_team_blocks_solving(
+def test_a_dispatch_for_another_team_is_logged_not_blocking(
     base_env: dict[str, str], tmp_workspace: Path
 ) -> None:
     record = build_v3_dispatch("别的队")
     write_dispatch(tmp_workspace, TEAM, record)
     with build_client(base_env, [answer_json()]) as client:
         response = client.post("/solve", json=chat_payload())
-    assert response.status_code == 422
-    assert response.json()["error"]["type"] == "DispatchValidationError"
+    assert response.status_code == 200
 
 
 def test_no_result_file_is_written_when_the_handler_fails(

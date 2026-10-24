@@ -360,14 +360,14 @@ def test_budget_exhaustion_returns_504(base_env: dict[str, str]) -> None:
     assert response.json()["error"]["type"] == "BudgetExhausted"
 
 
-def test_dispatch_validation_error_returns_422(
+def test_corrupt_dispatch_is_logged_and_solving_continues(
     base_env: dict[str, str], tmp_workspace: Path
 ) -> None:
+    """派题记录损坏只告警：平台已校验过，不能因此拒答一道合法题。"""
     (tmp_workspace / "data" / TEAM / "dispatch.json").write_text("{bad", encoding="utf-8")
     with build_client(base_env, [answer_json()]) as test_client:
         response = test_client.post("/solve", json=payload())
-    assert response.status_code == 422
-    assert response.json()["error"]["type"] == "DispatchValidationError"
+    assert response.status_code == 200
 
 
 def test_error_body_never_leaks_the_api_key(base_env: dict[str, str]) -> None:

@@ -10,8 +10,8 @@
 #      （docker save 默认 600，macOS 文件选择器会把 600 的文件置灰成不可选）
 #   3. 同步短名硬链接 ../agent-upload.tar（同一 inode，排除长文件名变量）
 #   4. 删掉旧标签后从归档重新 docker load（往返校验）
-#   5. 起容器跑 healthcheck、一次真实 A 类 /solve、落盘 MD5 与响应 MD5 比对、
-#      非 root 属主、凭据泄漏 grep
+#   5. 起容器跑 healthcheck、确认入口是官方 AgentRuntime、一次真实 A 类 /solve、
+#      落盘 MD5 与响应 MD5 比对、非 root 属主、凭据泄漏 grep
 #   6. 打印新的 SHA-256 与字节数——**把它抄进 docs/开发进度与接力记录.md 的归档表**
 #
 # 任何一步失败都会以非零退出码结束，不会留下「构建成功但没验证」的假象。
@@ -69,6 +69,16 @@ until "$DOCKER" exec "$CONTAINER" sh -c 'curl -fsS http://localhost:8080/health 
   sleep 0.5
 done
 echo "   容器内 healthcheck: PASS（$((i/2))s 内就绪）"
+
+# 组委会要求入口必须由 agenthack.AgentRuntime 启动。若镜像里 SDK 导入失败，
+# python -m research_assistant 会静默退回开发用 FastAPI，健康检查照样通过，
+# 但平台会判不合规。用启动日志与 SDK /health 形状把这条变成硬门槛。
+"$DOCKER" logs "$CONTAINER" 2>&1 | grep -q '"mode": "agent_runtime"' \
+  || { echo "   入口不是官方 AgentRuntime：启动日志缺少 mode=agent_runtime"; "$DOCKER" logs "$CONTAINER" 2>&1 | tail -20; exit 1; }
+"$DOCKER" exec "$CONTAINER" sh -c 'curl -fsS http://localhost:8080/health' \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('status')=='healthy', d; assert 'telemetry_configured' in d, d" \
+  || { echo "   /health 不是 SDK 官方形状（status=healthy + telemetry_configured）"; exit 1; }
+echo "   官方运行时入口: mode=agent_runtime；/health 由 SDK 提供"
 
 if [ -n "$ENV_ARGS" ]; then
   BODY='{"case_id":"A-90","function":"Chat","title":"t","input":"请解释光照强度与室内植物生长速度的可能关系，并问我一个最关键的研究范围限定问题。","materials":[],"constraints":[],"expected_output":"e","output_schema_ref":"Chat"}'

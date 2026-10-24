@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,14 +34,59 @@ class SolveContext:
     gateway: Gateway
 
 
-def _load_dispatch(workspace: WorkspacePaths, team: str, log: BoundLogger) -> DispatchRecord | None:
+def _check_current_question(
+    record: DispatchRecord, workspace: WorkspacePaths, case_id: str, log: BoundLogger
+) -> None:
+    """只核对当前题的 assigned 文件；缺失或哈希不符只告警。
+
+    组委会清单说明平台自己会校验 dispatch/assigned 与请求的一致性，且 Single
+    模式只保证当前题文件可读。把「11 个文件都在且哈希都对」当作解题前提，会在
+    平台只挂当前题时让整轮 422——这比少一层自检的代价大得多。
+    """
+    case = next((item for item in record.cases if item.case_id == case_id), None)
+    if case is None:
+        log.warning("dispatch.case_not_listed", case_id=case_id)
+        return
+    relative = case.question_file
+    if relative.startswith("/") or "\\" in relative or ".." in relative.split("/"):
+        log.warning("dispatch.unsafe_question_path", case_id=case_id)
+        return
+    path = (workspace.root / relative).resolve()
+    if workspace.assigned_dir.resolve() not in path.parents:
+        log.warning("dispatch.question_outside_assigned", case_id=case_id)
+        return
+    if not path.is_file():
+        log.warning("dispatch.question_absent", case_id=case_id)
+        return
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        log.warning("dispatch.question_unreadable", reason=exc.__class__.__name__)
+        return
+    if digest != case.question_sha256:
+        log.warning(
+            "dispatch.question_hash_mismatch",
+            case_id=case_id,
+            declared=case.question_sha256[:12],
+            actual=digest[:12],
+        )
+
+
+def _load_dispatch(
+    workspace: WorkspacePaths, team: str, log: BoundLogger, case_id: str
+) -> DispatchRecord | None:
+    """派题记录只用于一致性与安全边界提示，不因它拒绝一道平台派发的题。"""
     path = workspace.dispatch_file
     if not path.is_file():
         log.info("dispatch.absent", path=str(path))
         return None
-    record = DispatchRecord.load(path)
-    record.assert_team(team)
-    record.verify_questions(workspace)
+    try:
+        record = DispatchRecord.load(path)
+        record.assert_team(team)
+    except Exception as exc:
+        log.warning("dispatch.invalid", reason=exc.__class__.__name__, detail=str(exc)[:200])
+        return None
+    _check_current_question(record, workspace, case_id, log)
     log.info("dispatch.loaded", **record.summary())
     if record.is_legacy:
         log.warning(
@@ -91,7 +137,7 @@ def load_task_context(
         )
 
     allowed_materials = _verify_materials(task, workspace)
-    dispatch = _load_dispatch(workspace, settings.team, log)
+    dispatch = _load_dispatch(workspace, settings.team, log, task.case_id)
 
     if gateway is None:
         if settings.gateway is None:

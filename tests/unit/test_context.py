@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -8,14 +9,18 @@ from research_assistant.contracts.dispatch import DispatchRecord
 from research_assistant.contracts.task import Task
 from research_assistant.errors import (
     ConfigError,
-    DispatchValidationError,
     MaterialUnavailableError,
     PathAuthorizationError,
 )
 from research_assistant.runtime.context import SolveContext, load_task_context
 from research_assistant.runtime.gateway import FakeGateway, UnavailableGateway
 from research_assistant.runtime.settings import Settings
-from tests.fixtures.dispatch_v3 import build_v3_dispatch, write_dispatch, write_questions
+from tests.fixtures.dispatch_v3 import (
+    build_v3_dispatch,
+    question_payload,
+    write_dispatch,
+    write_questions,
+)
 
 TEAM = "测试队伍 A+1"
 
@@ -97,17 +102,53 @@ def test_dispatch_is_loaded_and_verified_when_mounted(
     assert context.dispatch.is_legacy is False
 
 
-def test_dispatch_team_mismatch_is_rejected(base_env: dict[str, str], tmp_workspace: Path) -> None:
+def test_dispatch_team_mismatch_is_logged_not_fatal(
+    base_env: dict[str, str], tmp_workspace: Path
+) -> None:
+    """派题记录只作提示；平台已校验一致性，不能因它拒绝一道合法题。"""
     record = build_v3_dispatch("别的队")
     write_dispatch(tmp_workspace, TEAM, record)
-    with pytest.raises(DispatchValidationError, match="team"):
-        load_task_context(task(), settings_for(base_env), gateway=FakeGateway(["x"]))
+    context = load_task_context(task(), settings_for(base_env), gateway=FakeGateway(["x"]))
+    assert context.dispatch is None
 
 
-def test_corrupt_dispatch_is_rejected(base_env: dict[str, str], tmp_workspace: Path) -> None:
+def test_corrupt_dispatch_is_logged_not_fatal(
+    base_env: dict[str, str], tmp_workspace: Path
+) -> None:
     (tmp_workspace / "data" / TEAM / "dispatch.json").write_text("{bad", encoding="utf-8")
-    with pytest.raises(DispatchValidationError):
-        load_task_context(task(), settings_for(base_env), gateway=FakeGateway(["x"]))
+    context = load_task_context(task(), settings_for(base_env), gateway=FakeGateway(["x"]))
+    assert context.dispatch is None
+
+
+def test_single_mode_works_when_only_the_current_question_is_mounted(
+    base_env: dict[str, str], tmp_workspace: Path
+) -> None:
+    """组委会清单：Single 只读取当前题。其余 assigned 文件不存在也必须能解题。"""
+    record = build_v3_dispatch(TEAM)
+    write_dispatch(tmp_workspace, TEAM, record)
+    assigned = tmp_workspace / "data" / TEAM / "assigned"
+    assigned.mkdir(parents=True, exist_ok=True)
+    (assigned / "A-100.json").write_text(
+        json.dumps(question_payload("A-100"), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    context = load_task_context(
+        task(case_id="A-100"), settings_for(base_env), gateway=FakeGateway(["x"])
+    )
+    assert isinstance(context.dispatch, DispatchRecord)
+
+
+def test_tampered_current_question_is_logged_not_fatal(
+    base_env: dict[str, str], tmp_workspace: Path
+) -> None:
+    record = build_v3_dispatch(TEAM)
+    write_dispatch(tmp_workspace, TEAM, record)
+    assigned = tmp_workspace / "data" / TEAM / "assigned"
+    assigned.mkdir(parents=True, exist_ok=True)
+    (assigned / "A-100.json").write_text('{"tampered": true}', encoding="utf-8")
+    context = load_task_context(
+        task(case_id="A-100"), settings_for(base_env), gateway=FakeGateway(["x"])
+    )
+    assert isinstance(context.dispatch, DispatchRecord)
 
 
 def test_absent_dispatch_is_not_fatal(base_env: dict[str, str]) -> None:
