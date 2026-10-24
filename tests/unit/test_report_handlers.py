@@ -348,6 +348,8 @@ def test_survey_with_fewer_than_five_papers_does_not_demand_a_fifth(
         + cited("第二项研究给出的效应量与其置信区间", 2)
         + cited("两者在方法学上的互补之处与共同缺口", 2)
         + cited("把这些缺口作为下一步的研究起点", 1)
+        + cited("在统一协议下重跑两项研究的原始数据", 2)
+        + cited("这样得到的比较结果才具备可解释性", 1)
         + "\n\n## 参考文献\n\n[1] a. "
         + P1
         + "\n[2] b. "
