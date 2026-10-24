@@ -220,21 +220,29 @@ def test_unexpected_error_body_does_not_leak_the_exception_message(
     assert "别的队" not in response.text
 
 
-def test_only_the_session_header_reaches_telemetry(
+def test_only_session_and_trace_context_headers_reach_telemetry(
     base_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """平台可能带 Authorization 头；只有 x-session-id 允许进 OTEL span 属性。"""
+    """平台可能带 Authorization/Cookie；进 OTEL 的只允许会话标识与 W3C trace context。"""
     calls = install_fake_sdk(monkeypatch, exit_raises=False)
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
     with build_client(base_env, [answer_json()]) as client:
         client.post(
             "/solve",
             json=chat_payload(),
-            headers={"Authorization": "Bearer sk-super-secret", "X-Session-ID": "sess-9"},
+            headers={
+                "Authorization": "Bearer sk-super-secret",
+                "Cookie": "session=secret-cookie",
+                "X-Session-ID": "sess-9",
+                "traceparent": traceparent,
+            },
         )
     assert calls["entered"] == 1
-    headers = calls["sessions"][0][4]
-    assert headers == {"x-session-id": "sess-9"}
-    assert "authorization" not in headers
+    args = calls["sessions"][0]
+    assert args[2] == "sess-9"
+    assert args[4] == {"traceparent": traceparent}
+    assert "authorization" not in args[4]
+    assert "cookie" not in args[4]
     assert "sk-super-secret" not in str(calls["sessions"])
 
 

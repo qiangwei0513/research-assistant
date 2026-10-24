@@ -132,3 +132,60 @@ def test_sdk_failures_never_propagate(monkeypatch: pytest.MonkeyPatch) -> None:
     with telemetry.trace_session("A-01", "Chat", {}):
         pass
     telemetry.flush_telemetry()
+
+
+def test_trace_session_forwards_session_id_and_trace_headers(
+    fake_sdk: dict[str, Any],
+) -> None:
+    with telemetry.trace_session(
+        "A-01", "Chat", {"traceparent": "00-abc-def-01"}, session_id="platform-session-1"
+    ):
+        pass
+    args = fake_sdk["sessions"][0]
+    assert args[0] == "A-01"
+    assert args[1] == "Chat"
+    assert args[2] == "platform-session-1"
+    assert args[3] is None
+    assert args[4] == {"traceparent": "00-abc-def-01"}
+
+
+def test_solve_forwards_trace_context_but_never_authorization(
+    fake_sdk: dict[str, Any], base_env: dict[str, str]
+) -> None:
+    """平台靠 traceparent 关联请求；Authorization 绝不能被带进 span 属性。"""
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from research_assistant.api import create_app
+    from research_assistant.runtime.gateway import FakeGateway
+    from research_assistant.runtime.settings import Settings
+
+    answer = json.dumps({"answer": "答", "clarifying_question": "问？"}, ensure_ascii=False)
+    task = {
+        "case_id": "A-01",
+        "function": "Chat",
+        "title": "遥测头透传",
+        "input": "解释并提问。",
+        "materials": [],
+        "constraints": [],
+        "expected_output": "解释并提问。",
+        "output_schema_ref": "Chat",
+    }
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    with TestClient(
+        create_app(Settings.from_env(base_env), gateway=FakeGateway([answer]))
+    ) as client:
+        response = client.post(
+            "/solve",
+            json=task,
+            headers={
+                "X-Session-ID": "platform-session-1",
+                "traceparent": traceparent,
+                "Authorization": "Bearer sk-should-never-be-forwarded",
+            },
+        )
+    assert response.status_code == 200
+    args = fake_sdk["sessions"][0]
+    assert args[2] == "platform-session-1"
+    assert args[4] == {"traceparent": traceparent}

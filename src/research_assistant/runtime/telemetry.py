@@ -82,16 +82,25 @@ def _telemetry_instance() -> Any | None:
 
 @contextmanager
 def trace_session(
-    case_id: str, function: str, headers: Mapping[str, str] | None = None
+    case_id: str,
+    function: str,
+    headers: Mapping[str, str] | None = None,
+    *,
+    session_id: str | None = None,
 ) -> Iterator[None]:
-    """有 SDK 时进入 Telemetry.session；无 SDK 时为 no-op。"""
+    """有 SDK 时进入 Telemetry.session；无 SDK 时为 no-op。
+
+    session_id 用平台请求头里的会话标识（若有），否则由 SDK 生成随机值；
+    headers 只应含 W3C trace context（traceparent/tracestate），SDK 靠它把本任务的
+    span 接到平台这次请求的同一条 trace 上。
+    """
     instance = _telemetry_instance()
     if instance is None:
         with nullcontext():
             yield
         return
     try:
-        manager = instance.session(case_id, function, None, None, dict(headers or {}))
+        manager = instance.session(case_id, function, session_id, None, dict(headers or {}))
     except Exception as exc:
         _LOG.warning("telemetry.session_failed", reason=exc.__class__.__name__, case_id=case_id)
         with nullcontext():

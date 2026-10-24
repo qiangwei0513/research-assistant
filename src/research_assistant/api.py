@@ -41,6 +41,7 @@ from research_assistant.solve import persist_and_verify, solve
 JSON_MEDIA_TYPE = "application/json; charset=utf-8"
 HEALTH_PROBE_NAME = ".health-probe"
 SESSION_HEADER = "x-session-id"
+TRACE_CONTEXT_HEADERS = frozenset({"traceparent", "tracestate"})
 
 
 def build_settings() -> Settings:
@@ -171,12 +172,20 @@ def create_app(settings: Settings | None = None, *, gateway: Gateway | None = No
         except ResearchAssistantError as exc:
             return _error_response(exc, log)
 
-        # 只透传会话头给遥测，避免把 Authorization 等敏感头带进 trace
-        headers = {k: v for k, v in request.headers.items() if k.lower() == SESSION_HEADER}
+        # 只透传会话标识与 W3C trace context，避免把 Authorization 等敏感头带进 trace
+        session_id = request.headers.get(SESSION_HEADER)
+        trace_headers = {
+            k: v for k, v in request.headers.items() if k.lower() in TRACE_CONTEXT_HEADERS
+        }
         try:
             # SDK 拓扑是 session → task → llm：task() 必须在 session 内，
             # 否则平台报 AGENT_RUNTIME_TRACE_MISSING（只有 session 与 llm 不够）
-            with trace_session(task.case_id, task.function.value, headers), task_span():
+            with (
+                trace_session(
+                    task.case_id, task.function.value, trace_headers, session_id=session_id
+                ),
+                task_span(),
+            ):
                 context = await anyio.to_thread.run_sync(
                     partial(load_task_context, task, resolved, gateway=gateway)
                 )
