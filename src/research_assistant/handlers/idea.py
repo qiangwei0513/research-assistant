@@ -40,6 +40,9 @@ STAGE_REPAIR = "idea.repair"
 MAX_TOKENS = 8192
 REPAIR_BUDGET_SECONDS = 20.0
 TARGET_BODY_CHARACTERS = 1800
+# 实测 E-01 写到 4460 字符耗时 170.9s，单题上限 180s；必须给正文设上限。
+MAX_BODY_CHARACTERS = 2600
+PER_SECTION_CHARACTERS = 180
 MIN_TECHNICAL_CHARACTERS = 200
 
 # 规则要求的分节；缺节直接压低档位，因此必须逐节自检
@@ -56,11 +59,28 @@ REQUIRED_SECTIONS: tuple[str, ...] = (
     "可行性与成本",
     "失败边界与可证伪条件",
 )
-# 证据边界必须出现的两处声明
+# 证据边界必须表达的两层意思。提示词要求模型写**字面原句**（对裁判最稳妥），
+# 但自检接受语义等价表达——否则模型写了「未经任何实验取得」这类同样合规的说法时，
+# 会触发一轮约 60 秒的无谓修复，而单题时限只有 180 秒。
 REQUIRED_BOUNDARY_STATEMENTS: tuple[str, ...] = (
     "模拟观察尚未验证",
     "所提改进尚未执行",
 )
+# 两层边界意思用**语义正则**判定，而不是枚举字面串。
+# 教训：早先要求字面原句「模拟观察尚未验证」，实测模型写「以上数值均为设计预期，
+# 未经任何实验取得」这类同样合规的表达就被判缺失，从而触发一轮约 60 秒的无谓修复；
+# 而单题时限只有 180 秒。逐个扩充字面标记是打地鼠，改成「否定词 + 验证/执行类动词」
+# 的小范围正则更稳健。提示词仍要求模型写字面原句（对裁判最稳妥）。
+_NEGATION = r"(?:尚未|尚末|未曾|不曾|还未|没有|并未|未|待)"
+_VERIFIED = r"(?:验证|检验|实验|测量|测试|实测|证实)"
+_EXECUTED = r"(?:执行|实施|开展|运行|跑过|做过|完成)"
+OBSERVATION_UNVERIFIED_PATTERN = re.compile(
+    _NEGATION + r"[^。；;\n]{0,16}" + _VERIFIED + r"|" + r"(?:设计预期|期望目标|预期目标)"
+)
+IMPROVEMENT_NOT_RUN_PATTERN = re.compile(
+    _NEGATION + r"[^。；;\n]{0,16}" + _EXECUTED + r"|" + r"不作(?:为|当作)已完成实验"
+)
+
 # 会被判为 generic_template 的模板化句式（专属性系数会从 1 掉到 0.55）
 GENERIC_TEMPLATE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"随着(?:人工智能|深度学习|大模型)的(?:快速)?发展"),
@@ -149,6 +169,68 @@ def _has_baseline_comparison(markdown: str) -> bool:
     return any(w in body for w in _BASELINE_WORDS) and any(w in body for w in _COMPARISON_WORDS)
 
 
+_METRIC_SECTION = "量化指标"
+_METRIC_NAME_TOKENS = (
+    "指标",
+    "f1",
+    "rmse",
+    "mae",
+    "auc",
+    "mrr",
+    "recall",
+    "precision",
+    "accuracy",
+    "r²",
+    "r2",
+    "召回",
+    "准确率",
+    "误差",
+    "吞吐",
+    "时延",
+    "延迟",
+    "耗时",
+    "百分点",
+    "baseline",
+    "score",
+    "ndcg",
+    "bleu",
+    "rouge",
+    "jain",
+)
+_METRIC_UNITS = (
+    "%",
+    "％",
+    "ms",
+    "秒",
+    "k",
+    "kw",
+    "分",
+    "个",
+    "倍",
+    "queries",
+    "pp",
+)
+
+
+def _has_quantitative_metrics(markdown: str) -> bool:
+    """「量化指标」小节里必须同时出现数字与可测量的指标名/单位。
+
+    早先用固定单位后缀的正则（如 `\\d+%`、`提升\\d+%`）判定，实测把
+    「R²（基线组预期0.52±0.02）」「RMSE 3.2K」「高4个百分点」这些完全合格的写法
+    全部漏判为缺失，从而触发一轮无谓修复。改为「有数字 + 有指标名或单位」。
+    """
+    body = _section_body(markdown, _METRIC_SECTION)
+    if not body.strip():
+        # 小节标题缺失时退回全文，避免与 missing_sections 重复报同一个问题
+        body = markdown
+    lowered = body.lower()
+    if not re.search(r"\d", lowered):
+        return False
+    return any(token in lowered for token in _METRIC_NAME_TOKENS) or any(
+        unit in lowered for unit in _METRIC_UNITS
+    )
+
+
 def check_idea_report(markdown: str) -> IdeaCheck:
     headings = [h.strip() for h in _HEADING_LINE.findall(markdown)]
     joined_headings = " ".join(headings)
@@ -157,8 +239,11 @@ def check_idea_report(markdown: str) -> IdeaCheck:
     )
     missing_boundary = tuple(
         statement
-        for statement in REQUIRED_BOUNDARY_STATEMENTS
-        if statement not in markdown.replace(" ", "")
+        for statement, pattern in (
+            (REQUIRED_BOUNDARY_STATEMENTS[0], OBSERVATION_UNVERIFIED_PATTERN),
+            (REQUIRED_BOUNDARY_STATEMENTS[1], IMPROVEMENT_NOT_RUN_PATTERN),
+        )
+        if pattern.search(markdown) is None
     )
 
     technical = _strip_code_and_references(markdown)
@@ -180,11 +265,8 @@ def check_idea_report(markdown: str) -> IdeaCheck:
             {pattern.pattern for pattern in GENERIC_TEMPLATE_PATTERNS if pattern.search(markdown)}
         )
     )
-    lowered = markdown
     has_baseline = _has_baseline_comparison(markdown)
-    has_metrics = bool(
-        re.search(r"\d+(?:\.\d+)?\s*(?:%|百分点|ms|秒|F1|BLEU|AUC|MRR|Recall)", lowered)
-    ) or bool(re.search(r"(?:提升|下降|降低|减少)\s*\d+(?:\.\d+)?\s*(?:%|个百分点)", lowered))
+    has_metrics = _has_quantitative_metrics(markdown)
 
     return IdeaCheck(
         missing_sections=missing_sections,
@@ -213,7 +295,10 @@ SYSTEM_PROMPT = (
     "写具体到本题材料的技术内容；重复句不计入篇幅。\n"
     "6. 不得编造事实、数据、页码或参考文献；结尾用 `## 参考文献` 列出实际引用的指定论文"
     "及完整 PDF 文件名。\n"
-    f"7. 正文（不含参考文献与代码）至少 {TARGET_BODY_CHARACTERS} 字符，中文写作。\n"
+    f"7. 正文（不含参考文献与代码）控制在 {TARGET_BODY_CHARACTERS} 至 "
+    f"{MAX_BODY_CHARACTERS} 字符之间，中文写作。**每节 {PER_SECTION_CHARACTERS} 字符左右即可，"
+    "写要点不要展开成段落**：本题有严格的单题时限，实测写满 4000 字符要耗时 170 秒，"
+    "逼近上限；超时或被迫截断的代价是整题 0 分，而正文只要超过 800 字符且八要点齐全就能得分。\n"
     "8. 只输出 Markdown 正文本身，不要代码围栏、不要任何前后缀说明。"
 )
 

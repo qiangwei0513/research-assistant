@@ -476,9 +476,50 @@ def test_every_required_section_is_checked() -> None:
 
 
 def test_missing_boundary_statements_are_detected() -> None:
-    md = good_idea_markdown().replace("上述模拟观察尚未验证，所提改进尚未执行", "效果已经验证")
+    """整句删掉两层边界意思后必须被检出（只删半句会留下语义等价表达，属正常放行）。"""
+    md = good_idea_markdown().replace(
+        "上述模拟观察尚未验证，所提改进尚未执行，全部效果均为待验证的预期，"
+        "不得据此认为已经取得实验结论。",
+        "上述效果均已在实验中取得，结论可直接采用。",
+    )
+    assert md != good_idea_markdown()
     check = check_idea_report(md)
     assert set(check.missing_boundary_statements) == set(REQUIRED_BOUNDARY_STATEMENTS)
+
+
+def test_semantically_equivalent_boundary_wording_is_accepted() -> None:
+    """实测教训：模型写「未经任何实验取得」同样合规，字面匹配会触发无谓的修复轮。"""
+    md = good_idea_markdown().replace(
+        "上述模拟观察尚未验证，所提改进尚未执行",
+        "上述数值未经任何实验取得，所提改进方案也还没有执行",
+    )
+    assert check_idea_report(md).missing_boundary_statements == ()
+
+
+def test_quantitative_metrics_accepts_realistic_notation() -> None:
+    """实测教训：R²（0.52±0.02）、RMSE 3.2K、高4个百分点 都是合格的量化指标写法，
+    早先按固定单位后缀的正则会把它们全部漏判为缺失。"""
+    for notation in (
+        "主要指标：R²（基线组预期0.52±0.02，改进组预期0.60±0.02）。",
+        "均方根误差 RMSE（单位K，基线组预期3.2K，改进组预期2.8K）。",
+        "边界 F1-score 预期改进组比基线组高4个百分点。",
+        "以 Macro-F1 为主指标，预期相对基线提升 3.5%。",
+    ):
+        md = good_idea_markdown().replace(
+            "以 Macro-F1 为主指标，预期相对基线提升 3.5%，同时报告 Accuracy 与运行时间，"
+            "并给出 95% 置信区间。",
+            notation,
+        )
+        assert check_idea_report(md).has_quantitative_metrics is True, notation
+
+
+def test_quantitative_metrics_still_rejects_a_purely_qualitative_section() -> None:
+    md = good_idea_markdown().replace(
+        "以 Macro-F1 为主指标，预期相对基线提升 3.5%，同时报告 Accuracy 与运行时间，"
+        "并给出 95% 置信区间。",
+        "将从多个角度综合评估方案效果，并给出定性的好坏判断。",
+    )
+    assert check_idea_report(md).has_quantitative_metrics is False
 
 
 def test_boundary_statements_tolerate_inserted_whitespace() -> None:
