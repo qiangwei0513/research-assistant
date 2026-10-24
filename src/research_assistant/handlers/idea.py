@@ -43,6 +43,8 @@ TARGET_BODY_CHARACTERS = 1800
 # 实测 E-01 写到 4460 字符耗时 170.9s，单题上限 180s；必须给正文设上限。
 MAX_BODY_CHARACTERS = 2600
 PER_SECTION_CHARACTERS = 180
+# C 类保留 6000 字符/篇（引用与页码核验需要详尽原文），E 类收紧到 2200
+IDEA_MAX_CHARS_PER_DOCUMENT = 2200
 MIN_TECHNICAL_CHARACTERS = 200
 
 # 规则要求的分节；缺节直接压低档位，因此必须逐节自检
@@ -345,7 +347,10 @@ def _strip_code_fence(content: str) -> str:
 
 def solve_idea(task: Task, context: SolveContext) -> Mapping[str, Any]:
     report = extract_documents(task.materials, context.workspace, context.log)
-    pack = build_evidence_pack(report.documents)
+    # E 类是提方案，不像 C 类需要逐条引用的详尽证据；收紧证据包可显著缩短 prefill。
+    # 实测 E 类生成耗时与输出长度强相关（60.9s/2809 字符 到 176.1s/4400 字符），
+    # 而单题上限只有 180s，因此必须从输入侧压时间，而不能只靠提示词求模型写短。
+    pack = build_evidence_pack(report.documents, max_chars_per_document=IDEA_MAX_CHARS_PER_DOCUMENT)
     if not pack.entries:
         raise MaterialUnavailableError(
             "cannot design a research plan without usable materials",
