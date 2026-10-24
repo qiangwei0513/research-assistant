@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +10,6 @@ import pytest
 
 from research_assistant.contracts.results import MIN_BODY_CHARACTERS
 from research_assistant.contracts.task import Task
-from research_assistant.errors import MaterialUnavailableError
 from research_assistant.handlers.idea import (
     REQUIRED_BOUNDARY_STATEMENTS,
     REQUIRED_SECTIONS,
@@ -320,16 +318,21 @@ def test_survey_strips_a_code_fence_the_model_added(
     assert "```" not in result["markdown"]
 
 
-def test_survey_without_usable_materials_raises_instead_of_returning_a_shell(
+def test_survey_without_usable_materials_returns_an_honest_schema(
     base_env: dict[str, str], papers_root: Path, tmp_workspace: Path
 ) -> None:
+    """规范：非 D 类材料缺失仍保持原 Schema；不能编造，也不能 422。"""
     task = survey_task([])
     context = context_for(base_env, task, [], papers_root, tmp_workspace)
-    with pytest.raises(MaterialUnavailableError):
-        solve_survey(task, context)
+    result = solve_survey(task, context)
+    assert set(result) == {"case_id", "path", "markdown"}
+    assert len(result["markdown"].strip()) >= 800
+    assert "无可引用的授权材料" in result["markdown"]
+    written = (tmp_workspace / result["path"]).read_text(encoding="utf-8")
+    assert written == result["markdown"]
 
 
-def test_survey_with_only_unparseable_materials_raises(
+def test_survey_with_only_unparseable_materials_lists_the_gap(
     base_env: dict[str, str], papers_root: Path, tmp_workspace: Path
 ) -> None:
     from tests.fixtures.papers import write_scanned_pdf
@@ -337,8 +340,10 @@ def test_survey_with_only_unparseable_materials_raises(
     write_scanned_pdf(papers_root, "扫描版.pdf")
     task = survey_task(["扫描版.pdf"])
     context = context_for(base_env, task, [], papers_root, tmp_workspace)
-    with pytest.raises(MaterialUnavailableError, match=re.escape("扫描版.pdf")):
-        solve_survey(task, context)
+    result = solve_survey(task, context)
+    assert len(result["markdown"].strip()) >= 800
+    assert "扫描版.pdf" in result["markdown"]
+    assert "无可引用的授权材料" in result["markdown"]
 
 
 def test_survey_with_fewer_than_five_papers_does_not_demand_a_fifth(
@@ -441,13 +446,20 @@ def test_idea_does_not_use_the_legacy_structure(
         assert legacy not in result
 
 
-def test_idea_without_materials_raises(
+def test_idea_without_materials_returns_every_required_section_honestly(
     base_env: dict[str, str], papers_root: Path, tmp_workspace: Path
 ) -> None:
+    from research_assistant.handlers.idea import REQUIRED_SECTIONS
+
     task = idea_task([])
     context = context_for(base_env, task, [], papers_root, tmp_workspace)
-    with pytest.raises(MaterialUnavailableError):
-        solve_idea(task, context)
+    result = solve_idea(task, context)
+    assert set(result) == {"case_id", "path", "markdown"}
+    for section in REQUIRED_SECTIONS:
+        assert section in result["markdown"], section
+    assert "尚未验证" in result["markdown"]
+    written = (tmp_workspace / result["path"]).read_text(encoding="utf-8")
+    assert written == result["markdown"]
 
 
 def test_idea_runs_a_repair_round_when_sections_are_missing(

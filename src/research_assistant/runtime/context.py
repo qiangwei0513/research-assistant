@@ -11,7 +11,7 @@ from pathlib import Path
 
 from research_assistant.contracts.dispatch import DispatchRecord
 from research_assistant.contracts.task import Task
-from research_assistant.errors import ConfigError, MaterialUnavailableError
+from research_assistant.errors import ConfigError, PathAuthorizationError
 from research_assistant.runtime.deadline import Deadline
 from research_assistant.runtime.gateway import Gateway, HttpGateway, UnavailableGateway
 from research_assistant.runtime.logging import BoundLogger, JsonLogger
@@ -25,6 +25,7 @@ class SolveContext:
     team: str
     workspace: WorkspacePaths
     allowed_materials: frozenset[str]
+    materials: tuple[str, ...]
     output_dir: Path
     work_dir: Path
     deadline: Deadline
@@ -97,23 +98,63 @@ def _load_dispatch(
     return record
 
 
-def _verify_materials(task: Task, workspace: WorkspacePaths) -> frozenset[str]:
-    allowed: set[str] = set()
-    for material in task.materials:
-        path = workspace.paper(material)
-        # is_file() 只对 ENOENT/ENOTDIR/EBADF/ELOOP 静默；ENAMETOOLONG 等会抛 OSError。
-        # 那是材料问题，必须落在 422，不能让裸 OSError 逃成笼统 500。
+def _resolve_material(
+    material: str, workspace: WorkspacePaths, listing: list[str] | None
+) -> str | None:
+    """把题目里的材料名解析成论文库里真实存在的文件名。
+
+    平台可能给带目录前缀的路径，也可能大小写与挂载文件不同；B 类评分本身对
+    大小写等价。找不到就返回 None，由调用方告警，绝不因此拒绝整道题。
+    """
+    candidates = [material]
+    basename = Path(material).name
+    if basename and basename != material:
+        candidates.append(basename)
+    for candidate in candidates:
         try:
-            present = path.is_file()
+            path = workspace.paper(candidate)
+        except PathAuthorizationError:
+            # 路径越界是攻击面，不是「缺材料」；必须原样上抛为 403
+            raise
+        except Exception:
+            continue
+        try:
+            if path.is_file():
+                return candidate
         except OSError:
-            present = False
-        if not present:
-            raise MaterialUnavailableError(
-                f"authorized material is not available: {material!r:.64}",
-                case_id=task.case_id,
-            )
-        allowed.add(material)
-    return frozenset(allowed)
+            continue
+    if listing is None:
+        return None
+    target = basename.casefold()
+    for name in listing:
+        if name.casefold() == target:
+            return name
+    return None
+
+
+def _resolve_materials(task: Task, workspace: WorkspacePaths, log: BoundLogger) -> tuple[str, ...]:
+    """只保留真实存在的材料，并保持题目给出的顺序。
+
+    材料缺失不是协议错误：平台可能没有挂载论文库，或 Single 模式只挂当前题所需
+    文件。拒绝整题会让 B/C/E 直接归零；交给各 handler 如实处理（B 返回空数组，
+    C/E 返回诚实报告）才是规范要求的行为。
+    """
+    listing: list[str] | None = None
+    try:
+        listing = sorted(entry.name for entry in workspace.papers_root.iterdir() if entry.is_file())
+    except OSError:
+        listing = None
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for material in task.materials:
+        found = _resolve_material(material, workspace, listing)
+        if found is None:
+            log.warning("materials.missing", filename=material[:200])
+            continue
+        if found not in seen:
+            seen.add(found)
+            resolved.append(found)
+    return tuple(resolved)
 
 
 def load_task_context(
@@ -136,7 +177,7 @@ def load_task_context(
             "task.unknown_fields", fields=sorted(task.unknown_fields), reason="protocol drift"
         )
 
-    allowed_materials = _verify_materials(task, workspace)
+    materials = _resolve_materials(task, workspace, log)
     dispatch = _load_dispatch(workspace, settings.team, log, task.case_id)
 
     if gateway is None:
@@ -151,7 +192,8 @@ def load_task_context(
         case_id=task.case_id,
         team=settings.team,
         workspace=workspace,
-        allowed_materials=allowed_materials,
+        allowed_materials=frozenset(materials),
+        materials=materials,
         output_dir=workspace.team_dir,
         work_dir=workspace.work_dir(task.case_id),
         deadline=Deadline.start(settings.case_budget_seconds),

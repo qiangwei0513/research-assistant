@@ -228,7 +228,7 @@ def select_candidates(
 
 
 def solve_retrieval(task: Task, context: SolveContext) -> Mapping[str, Any]:
-    report = extract_documents(task.materials, context.workspace, context.log)
+    report = extract_documents(context.materials, context.workspace, context.log)
     usable = report.usable()
     if report.duplicate_filenames:
         context.log.info(

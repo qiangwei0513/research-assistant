@@ -9,7 +9,6 @@ from research_assistant.contracts.dispatch import DispatchRecord
 from research_assistant.contracts.task import Task
 from research_assistant.errors import (
     ConfigError,
-    MaterialUnavailableError,
     PathAuthorizationError,
 )
 from research_assistant.runtime.context import SolveContext, load_task_context
@@ -66,13 +65,13 @@ def test_allowed_materials_are_frozen(base_env: dict[str, str], papers_root: Pat
         context.allowed_materials.add("x")  # type: ignore[attr-defined]
 
 
-def test_missing_material_file_raises_material_unavailable(
-    base_env: dict[str, str], papers_root: Path
-) -> None:
-    with pytest.raises(MaterialUnavailableError, match=r"不存在\.pdf"):
-        load_task_context(
-            task(materials=["不存在.pdf"]), settings_for(base_env), gateway=FakeGateway(["x"])
-        )
+def test_missing_material_file_is_skipped(base_env: dict[str, str], papers_root: Path) -> None:
+    """平台可能没挂论文库；缺失材料只告警，不能拦下整道题。"""
+    context = load_task_context(
+        task(materials=["不存在.pdf"]), settings_for(base_env), gateway=FakeGateway(["x"])
+    )
+    assert context.materials == ()
+    assert context.allowed_materials == frozenset()
 
 
 def test_material_escaping_papers_root_raises_path_authorization(base_env: dict[str, str]) -> None:

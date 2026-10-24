@@ -28,7 +28,7 @@ from research_assistant.documents.evidence import (
     shrink_budget,
 )
 from research_assistant.documents.extractor import extract_documents
-from research_assistant.errors import GatewayError, MaterialUnavailableError
+from research_assistant.errors import GatewayError
 from research_assistant.runtime.gateway import Message
 from research_assistant.runtime.modelcall import complete_parsed
 from research_assistant.runtime.persistence import write_text_verified
@@ -347,17 +347,63 @@ def _strip_code_fence(content: str) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def _unavailable_idea(task: Task, context: SolveContext, report: Any) -> Mapping[str, Any]:
+    """零可用材料时的诚实方案：保持 E 类 Schema 与必需小节，不编造论文事实。"""
+    context.log.warning(
+        "idea.materials_unavailable",
+        case_id=task.case_id,
+        requested=len(task.materials or ()),
+        statuses={d.filename: d.status.value for d in report.documents},
+    )
+    notes = {
+        "研究问题与边界": "问题仍来自本题要求；由于授权材料不可读，研究边界暂不能依据原文细化。",
+        "动机与已有局限": "无法核验原文所述局限，因此不给出具体文献判断，仅保留待核验位置。",
+        "核心机制": "机制假设需由原文证据支撑；材料缺失时只登记假设，不写成已证实结论。",
+        "技术路线": "恢复材料后按“读取—提取—对齐—评估”推进；当前仅保留流程定义。",
+        "基线与改进组": "基线需从原文实验设置中提取；当前不指定具体数值或方法名。",
+        "数据集": "数据集需按原文核对；当前不声称任何未经验证的数据来源。",
+        "实验与消融": "消融设计需以原文方法为参照；当前仅登记待设计的实验维度。",
+        "量化指标": "指标名称与单位须与题目要求一致；当前不报告任何未运行的数值。",
+        "多文献互补": "多篇论文的互补关系需逐篇核对后建立；当前不臆测引用关系。",
+        "可行性与成本": "成本评估依赖真实数据规模；当前只保留评估框架，不给出编造数字。",
+        "失败边界与可证伪条件": "可证伪条件需与实验设置绑定；材料恢复后补充具体阈值与判定规则。",
+    }
+    requested = "\n".join(f"- {name}" for name in task.materials or ()) or "- （题目未列出材料）"
+    markdown = (
+        f"# {task.title}\n\n"
+        "## 材料可用性声明\n\n"
+        "本题指定的授权论文在当前运行环境中不可读取。为避免把推测写成论文结论，本方案"
+        "只保留研究设计与待核验事项，不包含任何来自指定论文的具体事实或数据。\n\n"
+        f"## 题目要求\n\n{task.input}\n\n"
+        + "\n\n".join(f"## {name}\n\n{text}" for name, text in notes.items())
+        + "\n\n## 证据边界与可证伪性\n\n"
+        "上述内容均为待核验的设计说明，不构成对论文结果的复述。模拟观察尚未验证，"
+        "任何效果判断都必须等待真实材料与实验数据；在材料恢复前，本方案不声称任何"
+        "改进效果已经出现或可复现。恢复材料后应补充：明确的对照组与改进组定义、可"
+        "复现的数据切分与随机种子、预先登记的量化阈值、以及否定该假设的判定条件。\n\n"
+        "## 交付与复核清单\n\n"
+        "提交前应逐项核对：每个小节是否给出可执行的步骤；指标名称与单位是否与题目"
+        "一致；引用是否只来自本题指定论文并可在原文定位；成本与风险是否给出依据；"
+        "失败条件是否可观测。任何无法核验的数值都应保持为空或明确标注未知。\n\n"
+        f"## 指定材料清单\n\n{requested}\n"
+    )
+    path = context.workspace.idea_md(task.case_id)
+    from research_assistant.runtime.persistence import write_text_verified
+
+    write_text_verified(path, markdown)
+    relative = context.workspace.relative_to_output(path)
+    context.log.info("idea.completed_unavailable", case_id=task.case_id, path=relative)
+    return idea_result(task.case_id, path=relative, markdown=markdown)
+
+
 def solve_idea(task: Task, context: SolveContext) -> Mapping[str, Any]:
-    report = extract_documents(task.materials, context.workspace, context.log)
+    report = extract_documents(context.materials, context.workspace, context.log)
     # E 类是提方案，不像 C 类需要逐条引用的详尽证据；收紧证据包可显著缩短 prefill。
     # 实测 E 类生成耗时与输出长度强相关（60.9s/2809 字符 到 176.1s/4400 字符），
     # 而单题上限只有 180s，因此必须从输入侧压时间，而不能只靠提示词求模型写短。
     pack = build_evidence_pack(report.documents, max_chars_per_document=IDEA_MAX_CHARS_PER_DOCUMENT)
     if not pack.entries:
-        raise MaterialUnavailableError(
-            "cannot design a research plan without usable materials",
-            case_id=task.case_id,
-        )
+        return _unavailable_idea(task, context, report)
 
     allowed = frozenset(pack.filenames)
 

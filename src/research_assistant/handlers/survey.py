@@ -18,7 +18,6 @@ from research_assistant.contracts.task import Task
 from research_assistant.documents.evidence import (
     DEFAULT_MAX_CHARS_PER_DOCUMENT,
     EvidencePack,
-    any_unusable_reason,
     build_evidence_pack,
     is_context_length_error,
     render_evidence_pack,
@@ -26,7 +25,7 @@ from research_assistant.documents.evidence import (
     shrink_budget,
 )
 from research_assistant.documents.extractor import extract_documents
-from research_assistant.errors import GatewayError, MaterialUnavailableError
+from research_assistant.errors import GatewayError
 from research_assistant.runtime.gateway import Message
 from research_assistant.runtime.modelcall import complete_parsed
 from research_assistant.validation.citations import (
@@ -134,20 +133,66 @@ def _log_analysis(context: SolveContext, analysis: CitationAnalysis, stage: str)
     )
 
 
+def _unavailable_survey(task: Task, context: SolveContext, report: Any) -> Mapping[str, Any]:
+    """零可用材料时的诚实报告：保持 C 类 Schema，不编造任何论文事实。"""
+    context.log.warning(
+        "survey.materials_unavailable",
+        case_id=task.case_id,
+        requested=len(task.materials or ()),
+        statuses={d.filename: d.status.value for d in report.documents},
+    )
+    requested = "\n".join(f"- {name}" for name in task.materials or ()) or "- （题目未列出材料）"
+    markdown = (
+        f"# {task.title}\n\n"
+        "## 摘要\n\n"
+        "本题指定的授权论文在当前运行环境中不可读取（未挂载、无法解析或文件名不匹配），"
+        "因此本报告无法依据原文给出可核验的综述结论。为避免把推测写成事实，正文不包含"
+        "任何来自指定论文的数据、页码或结论性陈述。\n\n"
+        f"## 题目要求\n\n{task.input}\n\n"
+        "## 材料可用性说明\n\n"
+        "授权材料是本题事实与引用的唯一来源。当前可用材料为零，任何具体的实验数值、"
+        "样本规模、区域差异或饱和效应描述都无法溯源，因此不予给出。待材料恢复后，应按"
+        "原文逐条提取事实，标注 [编号] 或 [编号, p.页码]，并保证编号与参考文献一一对应。\n\n"
+        "## 建议的核验流程\n\n"
+        "第一步，确认每篇指定论文均存在于授权论文库并可解析出文本层；第二步，按主题"
+        "整理研究区域、遥感指标与温度指标，记录可核验页码；第三步，比较不同研究的设计"
+        "与结论差异，明确哪些结论可相互印证、哪些存在条件限制；第四步，撰写综述并逐条"
+        "回查引用，删除无法溯源的表述，最后生成与正文一致的参考文献表。\n\n"
+        "## 证据边界\n\n"
+        "本报告只记录材料可用性与核验流程，不包含未经阅读原文而写出的研究结论，也不"
+        "把模拟观察或常识推断表述为论文结果。材料恢复后应重新生成完整综述，并以原文"
+        "为准。\n\n"
+        "## 质量核对清单\n\n"
+        "材料恢复后应逐项核对：每一处事实与数据是否能在指定论文中找到对应页码；正文"
+        "引用编号是否与参考文献条目一一对应；参考文献是否使用论文库中的完整真实文件名；"
+        "是否只引用了本题允许的论文；不同研究的区域、时间与观测尺度差异是否被如实说明；"
+        "结论是否避免了超出原文证据范围的推断。只有以上各项全部通过，才可以把本报告"
+        "视为可提交的综述；任何一项无法核验，都应保留相应说明而不是补写推测内容。"
+        "复核时还应记录每篇论文的解析状态（可用、无文本层或缺失），并在正文中区分"
+        "“原文明确陈述”与“基于多篇研究的综合判断”，避免把后者写成前者。\n\n"
+        f"## 指定材料清单\n\n{requested}\n\n"
+        "## 参考文献\n\n"
+        "无可引用的授权材料。\n"
+    )
+    path = context.workspace.survey_md(task.case_id)
+    from research_assistant.runtime.persistence import write_text_verified
+
+    write_text_verified(path, markdown)
+    relative = context.workspace.relative_to_output(path)
+    context.log.info("survey.completed_unavailable", case_id=task.case_id, path=relative)
+    return survey_result(task.case_id, path=relative, markdown=markdown)
+
+
 def solve_survey(task: Task, context: SolveContext) -> Mapping[str, Any]:
-    report = extract_documents(task.materials, context.workspace, context.log)
+    report = extract_documents(context.materials, context.workspace, context.log)
     # 首次也要显式传预算：否则与缩减后的调用不一致（一个用隐式默认、一个用变量），
     # 既不可观测也容易被误当成「缩减没生效」。
     pack = build_evidence_pack(
         report.documents, max_chars_per_document=DEFAULT_MAX_CHARS_PER_DOCUMENT
     )
     if not pack.entries:
-        # C 类没有 failed 状态：写不出综述就必须报错，不能返回伪装成功的空壳
-        reason = any_unusable_reason(report.documents) or "本题没有可用的授权材料"
-        raise MaterialUnavailableError(
-            f"cannot write a survey without usable materials: {reason!r:.200}",
-            case_id=task.case_id,
-        )
+        # 规范要求非 D 类在材料缺失时仍保持原 Schema；返回 422 会让整题判无效。
+        return _unavailable_survey(task, context, report)
 
     allowed = frozenset(pack.filenames)
     min_papers = min(MIN_DISTINCT_PAPERS, len(pack.entries))

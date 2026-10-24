@@ -239,15 +239,27 @@ def test_report_category_without_gateway_reports_config_error(
     assert response.json()["error"]["type"] == "ConfigError"
 
 
-def test_report_category_without_materials_reports_422_before_touching_the_gateway(
+def test_report_category_without_materials_keeps_its_schema_without_the_gateway(
     base_env: dict[str, str],
 ) -> None:
-    """材料校验先于模型调用：没有可用材料时是 422，且不消耗任何模型预算。"""
+    """规范：非 D 类材料缺失仍保持原 Schema；这里不调用模型、也不返回 422。"""
     env = {k: v for k, v in base_env.items() if not k.startswith("CHALLENGE_LLM")}
     with TestClient(create_app(Settings.from_env(env), gateway=None)) as test_client:
         response = test_client.post("/solve", json=payload("C-01"))
-    assert response.status_code == 422
-    assert response.json()["error"]["type"] == "MaterialUnavailableError"
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == {"case_id", "path", "markdown"}
+    assert len(body["markdown"].strip()) >= 800
+
+
+def test_retrieval_with_unmounted_listed_materials_returns_an_empty_array(
+    base_env: dict[str, str],
+) -> None:
+    """平台现场：B 题列出了材料但论文库没挂载。绝不能 422，空数组是合法答案。"""
+    with build_client(base_env, []) as test_client:
+        response = test_client.post("/solve", json=payload("B-01", materials=["未挂载的论文.pdf"]))
+    assert response.status_code == 200, response.text
+    assert response.json() == {"case_id": "B-01", "papers": []}
 
 
 def test_retrieval_with_no_materials_returns_an_empty_papers_array(
@@ -317,11 +329,12 @@ def test_material_escape_returns_403(base_env: dict[str, str]) -> None:
     assert response.json()["error"]["type"] == "PathAuthorizationError"
 
 
-def test_missing_material_returns_422(base_env: dict[str, str]) -> None:
+def test_missing_material_is_skipped_not_fatal(base_env: dict[str, str]) -> None:
+    """材料文件缺失不再是协议错误：跳过并向模型正常作答。"""
     with build_client(base_env, [answer_json()]) as test_client:
         response = test_client.post("/solve", json=payload(materials=["不存在.pdf"]))
-    assert response.status_code == 422
-    assert response.json()["error"]["type"] == "MaterialUnavailableError"
+    assert response.status_code == 200
+    assert response.json()["answer"]
 
 
 def test_missing_team_returns_500(base_env: dict[str, str]) -> None:

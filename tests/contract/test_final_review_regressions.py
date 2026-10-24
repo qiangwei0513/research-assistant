@@ -172,26 +172,24 @@ def test_health_leaves_no_probe_files(base_env: dict[str, str], tmp_workspace: P
 # --- Important：超长 materials 必须落 422 而不是裸 OSError ---
 
 
-def test_overlong_material_returns_422_not_500(base_env: dict[str, str]) -> None:
-    """pathlib 只对 ENOENT/ENOTDIR/EBADF/ELOOP 静默，ENAMETOOLONG 会抛 OSError。"""
+def test_overlong_material_does_not_500_and_is_skipped(base_env: dict[str, str]) -> None:
+    """ENAMETOOLONG 是材料问题：跳过并继续答题，绝不能冒成 500 或整题拒绝。"""
     with build_client(base_env, [answer_json()]) as client:
         response = client.post("/solve", json=chat_payload() | {"materials": ["x" * 5000]})
-    assert response.status_code == 422, response.text
-    assert response.json()["error"]["type"] == "MaterialUnavailableError"
+    assert response.status_code == 200, response.text
+    assert response.json()["answer"]
 
 
-def test_overlong_material_error_message_is_truncated(base_env: dict[str, str]) -> None:
+def test_overlong_material_is_not_echoed_back(base_env: dict[str, str]) -> None:
     with build_client(base_env, [answer_json()]) as client:
         response = client.post("/solve", json=chat_payload() | {"materials": ["y" * 5000]})
-    body = response.json()["error"]["message"]
-    assert len(body) < 200
-    assert "y" * 200 not in body
+    assert "y" * 200 not in response.text
 
 
-def test_deeply_nested_material_returns_422_not_500(base_env: dict[str, str]) -> None:
+def test_deeply_nested_material_does_not_500(base_env: dict[str, str]) -> None:
     with build_client(base_env, [answer_json()]) as client:
         response = client.post("/solve", json=chat_payload() | {"materials": ["a/" * 4000]})
-    assert response.status_code in (403, 422), response.text
+    assert response.status_code == 200, response.text
 
 
 # --- Important：四条被变异测试证明零覆盖的安全/合同不变量 ---
