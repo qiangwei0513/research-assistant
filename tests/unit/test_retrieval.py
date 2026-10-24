@@ -508,3 +508,33 @@ def test_prompt_demands_exclusion_screening_before_selection() -> None:
     assert "0.75" in SYSTEM_PROMPT
     assert "宁缺勿滥" in SYSTEM_PROMPT
     assert "排除" in prompt
+
+
+def test_retrieval_shrinks_candidates_on_context_overflow(
+    base_env: dict[str, str], paper_library: list[str], papers_root: Path, tmp_workspace: Path
+) -> None:
+    """B 类同样要能在上下文超限时缩小候选摘要并重试。"""
+
+    task = retrieval_task(materials=paper_library)
+    good = model_papers(
+        [
+            {"filename": RELEVANT[0], "reason": "用遥感数据量化绿地覆盖率与地表温度的关系。"},
+        ]
+    )
+    fake = FakeGateway(
+        [
+            GatewayError("gateway returned HTTP 400 during retrieval.rerank: prompt is too long"),
+            good,
+        ]
+    )
+    env = {
+        **base_env,
+        "RESEARCH_PAPERS_ROOT": str(papers_root),
+        "RESEARCH_WORKSPACE_ROOT": str(tmp_workspace),
+    }
+    context = load_task_context(task, Settings.from_env(env), gateway=fake)
+    result = solve_retrieval(task, context)
+    assert result["case_id"] == "B-01"
+    assert [stage for stage, _ in fake.calls] == ["retrieval.rerank", "retrieval.rerank.shrunk"]
+    assert len(fake.calls[1][1][-1].content) < len(fake.calls[0][1][-1].content)
+    assert [p["filename"] for p in result["papers"]] == [RELEVANT[0]]

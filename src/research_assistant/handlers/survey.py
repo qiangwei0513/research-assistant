@@ -136,7 +136,11 @@ def _log_analysis(context: SolveContext, analysis: CitationAnalysis, stage: str)
 
 def solve_survey(task: Task, context: SolveContext) -> Mapping[str, Any]:
     report = extract_documents(task.materials, context.workspace, context.log)
-    pack = build_evidence_pack(report.documents)
+    # 首次也要显式传预算：否则与缩减后的调用不一致（一个用隐式默认、一个用变量），
+    # 既不可观测也容易被误当成「缩减没生效」。
+    pack = build_evidence_pack(
+        report.documents, max_chars_per_document=DEFAULT_MAX_CHARS_PER_DOCUMENT
+    )
     if not pack.entries:
         # C 类没有 failed 状态：写不出综述就必须报错，不能返回伪装成功的空壳
         reason = any_unusable_reason(report.documents) or "本题没有可用的授权材料"

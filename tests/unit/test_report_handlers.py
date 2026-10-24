@@ -18,10 +18,11 @@ from research_assistant.handlers.idea import (
     check_idea_report,
     solve_idea,
 )
-from research_assistant.handlers.survey import solve_survey
+from research_assistant.handlers.survey import build_user_prompt, solve_survey
 from research_assistant.runtime.context import load_task_context
 from research_assistant.runtime.gateway import FakeGateway
 from research_assistant.runtime.settings import Settings
+from tests.fixtures.papers import write_paper
 
 TEAM = "测试队伍 A+1"
 P1 = "城市绿地遥感_2024.pdf"
@@ -204,6 +205,21 @@ def context_for(
 def test_survey_writes_the_canonical_expert_file_and_returns_matching_markdown(
     base_env: dict[str, str], five_papers: list[str], papers_root: Path, tmp_workspace: Path
 ) -> None:
+    long_body = (
+        "We analyse satellite imagery to quantify how urban green space coverage correlates "
+        "with land surface temperature across districts, with repeated methodology discussion "
+        "and explicit comparisons of NDVI, thermal bands and regression design. " * 40
+    )
+    write_paper(
+        papers_root,
+        P1,
+        title="A very long methods appendix about urban green space and surface temperature",
+        author="Zhang, Wei; Li, Na",
+        keywords="remote sensing, urban heat, green space",
+        abstract="We quantify how urban green space coverage correlates with land surface temperature.",
+        body_paragraphs=[long_body],
+    )
+    # 其余四篇换成题目，让这道题里有五篇材料但第一篇明显超出预算
     markdown = good_survey_markdown()
     task = survey_task(five_papers)
     context = context_for(base_env, task, [markdown], papers_root, tmp_workspace)
@@ -384,7 +400,6 @@ def test_survey_prompt_lists_materials_with_citation_numbers(
 ) -> None:
     from research_assistant.documents.evidence import build_evidence_pack
     from research_assistant.documents.extractor import extract_documents
-    from research_assistant.handlers.survey import build_user_prompt
     from research_assistant.runtime.paths import WorkspacePaths
 
     task = survey_task(five_papers)
@@ -620,3 +635,121 @@ def test_result_json_is_parseable_and_utf8(
     data = serialize_result(result)
     assert json.loads(data.decode("utf-8"))["case_id"] == "C-01"
     assert "城市绿地".encode() in data
+
+
+# --- 上下文超限时的证据包缩减重试（Q01：正式模型上下文上限未知） ---
+
+
+def _context_overflow_error() -> Exception:
+    from research_assistant.errors import GatewayError
+
+    return GatewayError(
+        "gateway returned HTTP 400 during survey.generate: "
+        "prompt is too long: 400000 tokens > max context length"
+    )
+
+
+def test_survey_shrinks_the_evidence_pack_when_the_context_is_too_small(
+    base_env: dict[str, str],
+    five_papers: list[str],
+    papers_root: Path,
+    tmp_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """上下文超限时把每篇证据预算减半重建提示，再试一次且仅一次。"""
+    from research_assistant.handlers import survey as survey_module
+
+    budgets: list[int] = []
+    real_pack = survey_module.build_evidence_pack
+
+    def recording_pack(documents, *, max_chars_per_document: int):
+        budgets.append(max_chars_per_document)
+        return real_pack(documents, max_chars_per_document=max_chars_per_document)
+
+    monkeypatch.setattr(survey_module, "build_evidence_pack", recording_pack)
+    markdown = good_survey_markdown()
+    task = survey_task(five_papers)
+    fake = FakeGateway([_context_overflow_error(), markdown])
+    env = {
+        **base_env,
+        "RESEARCH_PAPERS_ROOT": str(papers_root),
+        "RESEARCH_WORKSPACE_ROOT": str(tmp_workspace),
+    }
+    context = load_task_context(task, Settings.from_env(env), gateway=fake)
+    result = solve_survey(task, context)
+
+    assert budgets == [6000, 3000], budgets
+    assert [stage for stage, _ in fake.calls] == ["survey.generate", "survey.generate.shrunk"]
+    assert result["markdown"] == markdown.strip()
+
+
+def test_idea_shrinks_the_evidence_pack_when_the_context_is_too_small(
+    base_env: dict[str, str], five_papers: list[str], papers_root: Path, tmp_workspace: Path
+) -> None:
+    long_body = (
+        "We benchmark convolutional and transformer architectures for semantic segmentation "
+        "of satellite imagery and discuss training data construction and boundary accuracy in "
+        "detail across many ablations. " * 40
+    )
+    write_paper(
+        papers_root,
+        P1,
+        title="A very long methods appendix about urban green space and surface temperature",
+        abstract="We quantify how urban green space coverage correlates with land surface temperature.",
+        body_paragraphs=[long_body],
+    )
+    task = idea_task(five_papers)
+    fake = FakeGateway([_context_overflow_error(), good_idea_markdown()])
+    env = {
+        **base_env,
+        "RESEARCH_PAPERS_ROOT": str(papers_root),
+        "RESEARCH_WORKSPACE_ROOT": str(tmp_workspace),
+    }
+    context = load_task_context(task, Settings.from_env(env), gateway=fake)
+    result = solve_idea(task, context)
+    assert result["case_id"] == "E-01"
+    assert [stage for stage, _ in fake.calls] == ["idea.generate", "idea.generate.shrunk"]
+    assert len(fake.calls[1][1][-1].content) < len(fake.calls[0][1][-1].content)
+
+
+def test_survey_does_not_shrink_on_unrelated_gateway_errors(
+    base_env: dict[str, str], five_papers: list[str], papers_root: Path, tmp_workspace: Path
+) -> None:
+    """只有上下文超限才缩减；普通 502 不得触发无意义的二次调用。"""
+    from research_assistant.errors import GatewayError
+
+    task = survey_task(five_papers)
+    fake = FakeGateway([GatewayError("gateway returned HTTP 502 during survey.generate")])
+    env = {
+        **base_env,
+        "RESEARCH_PAPERS_ROOT": str(papers_root),
+        "RESEARCH_WORKSPACE_ROOT": str(tmp_workspace),
+    }
+    context = load_task_context(task, Settings.from_env(env), gateway=fake)
+    with pytest.raises(GatewayError):
+        solve_survey(task, context)
+    assert len(fake.calls) == 1
+
+
+def test_shrink_budget_never_drops_below_a_usable_floor() -> None:
+    from research_assistant.documents.evidence import shrink_budget
+
+    assert shrink_budget(6000) == 3000
+    assert shrink_budget(2200) == 1100
+    assert shrink_budget(1600) == 800
+    assert shrink_budget(100) == 800  # 有下限，不能把证据削到无法支撑引用
+
+
+def test_context_error_detection_matches_real_gateway_wording() -> None:
+    from research_assistant.documents.evidence import is_context_length_error
+
+    for message in [
+        "prompt is too long: 400000 tokens > max context length",
+        "This request exceeds the maximum context length of the model.",
+        "context_length_exceeded",
+        "maximum context reached",
+        "Request too large",
+    ]:
+        assert is_context_length_error(message), message
+    assert not is_context_length_error("gateway returned HTTP 502 during survey.generate")
+    assert not is_context_length_error("upstream timeout")

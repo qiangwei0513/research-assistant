@@ -194,7 +194,11 @@ def _fallback_candidates(documents: Sequence[Any]) -> list[RetrievalCandidate]:
 
 
 def select_candidates(
-    task: Task, index: LexicalIndex, documents: Sequence[Any]
+    task: Task,
+    index: LexicalIndex,
+    documents: Sequence[Any],
+    *,
+    max_chars: int = MAX_CANDIDATE_CHARS,
 ) -> tuple[list[RetrievalCandidate], str]:
     """挑出交给模型判断的候选集，返回 (候选, 采用的策略名)。
 
@@ -216,7 +220,7 @@ def select_candidates(
     used = 0
     for candidate in candidates:
         summary_chars = len(candidate.document.metadata.abstract or "") + 700
-        if trimmed and used + summary_chars > MAX_CANDIDATE_CHARS:
+        if trimmed and used + summary_chars > max_chars:
             break
         trimmed.append(candidate)
         used += summary_chars
@@ -279,7 +283,7 @@ def solve_retrieval(task: Task, context: SolveContext) -> Mapping[str, Any]:
         if not is_context_length_error(exc.message):
             raise
         shrunk = shrink_budget(MAX_CANDIDATE_CHARS)
-        candidates, strategy = select_candidates(task, index, usable)
+        candidates, strategy = select_candidates(task, index, usable, max_chars=shrunk)
         summaries = [summarize_for_prompt(candidate) for candidate in candidates]
         context.log.warning(
             "retrieval.context_overflow_shrinking",
