@@ -32,6 +32,7 @@ from research_assistant.runtime.telemetry import (
     flush_telemetry,
     install_interceptors,
     shutdown_telemetry,
+    task_span,
     telemetry_configured,
     trace_session,
 )
@@ -173,17 +174,21 @@ def create_app(settings: Settings | None = None, *, gateway: Gateway | None = No
         # 只透传会话头给遥测，避免把 Authorization 等敏感头带进 trace
         headers = {k: v for k, v in request.headers.items() if k.lower() == SESSION_HEADER}
         try:
-            with trace_session(task.case_id, task.function.value, headers):
+            # SDK 拓扑是 session → task → llm：task() 必须在 session 内，
+            # 否则平台报 AGENT_RUNTIME_TRACE_MISSING（只有 session 与 llm 不够）
+            with trace_session(task.case_id, task.function.value, headers), task_span():
                 context = await anyio.to_thread.run_sync(
                     partial(load_task_context, task, resolved, gateway=gateway)
                 )
                 data = await anyio.to_thread.run_sync(_solve_in_thread, task, context)
-                flush_telemetry()
         except ResearchAssistantError as exc:
             return _error_response(exc, log)
         except Exception as exc:
             # 未预期异常不得泄漏内部细节：只回类名，不回消息
             return _unexpected_response(exc, task.case_id, log)
+        finally:
+            # 必须等 session span 也结束再 flush，否则导出的 trace 缺顶层 session
+            flush_telemetry()
         # 响应体直接复用落盘字节，保证与文件逐字节一致
         return Response(content=data, status_code=200, media_type=JSON_MEDIA_TYPE)
 

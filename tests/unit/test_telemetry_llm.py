@@ -243,3 +243,204 @@ def test_http_gateway_records_usage_on_the_llm_span(
     assert span.attrs["finish_reason"] == "stop"
     assert span.attrs["cached_tokens"] == 3
     assert span.attrs["context_length"] == 100
+
+
+# --- task span：平台核验的 session → task → llm 拓扑 ---
+
+
+class FakeTaskOp:
+    def __init__(self, calls: dict[str, Any], *, explode_exit: bool = False) -> None:
+        self.calls = calls
+        self.explode_exit = explode_exit
+        self.exited = False
+
+    def __enter__(self) -> FakeTaskOp:
+        self.calls["task_entered"] = self.calls.get("task_entered", 0) + 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.exited = True
+        self.calls["task_exit_exception"] = exc_type
+        if self.explode_exit:
+            raise RuntimeError("otel exporter down")
+        return False
+
+
+def install_task_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    op: FakeTaskOp | None = None,
+    enter_error: Exception | None = None,
+) -> FakeTaskOp:
+    if op is None:
+        op = FakeTaskOp({})
+    module = types.ModuleType("agenthack.telemetry")
+
+    def task_factory() -> Any:
+        if enter_error is None:
+            return op
+
+        # 真实 SDK 的 task() 是 @contextmanager：调用不抛，进入时才检查 current_session()
+        class Unavailable:
+            def __enter__(self) -> Any:
+                raise enter_error
+
+            def __exit__(self, *exc: Any) -> bool:
+                return False
+
+        return Unavailable()
+
+    module.task = task_factory  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "agenthack.telemetry", module)
+    telemetry.reset_cache()
+    return op
+
+
+def test_task_span_is_noop_without_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    without_sdk(monkeypatch)
+    with telemetry.task_span() as op:
+        assert op is None
+
+
+def test_task_span_yields_operation_and_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    op = install_task_sdk(monkeypatch)
+    with telemetry.task_span() as span:
+        assert span is op
+    assert op.exited is True
+    assert op.calls["task_entered"] == 1
+
+
+def test_task_span_outside_a_session_degrades_to_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SDK 的 task() 要求 current_session；进入失败只能退化，绝不能打断答题。"""
+    install_task_sdk(monkeypatch, enter_error=RuntimeError("no current session"))
+    with telemetry.task_span() as span:
+        assert span is None
+
+
+def test_business_exception_propagates_through_task_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    op = install_task_sdk(monkeypatch)
+    with pytest.raises(ValueError, match="boom"), telemetry.task_span():
+        raise ValueError("boom")
+    assert op.exited is True
+    assert op.calls["task_exit_exception"] is ValueError
+
+
+def test_task_span_exit_failure_does_not_mask_the_business_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    op = FakeTaskOp({}, explode_exit=True)
+    install_task_sdk(monkeypatch, op=op)
+    # 导出器失败不能把 ValueError 顶替成 RuntimeError
+    with pytest.raises(ValueError, match="boom"), telemetry.task_span():
+        raise ValueError("boom")
+
+
+def test_solve_emits_session_task_llm_topology(
+    base_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """平台要的是「有效任务追踪」：session 必须包住 task，task 必须包住 llm。"""
+    events: list[str] = []
+    depth = {"session": 0, "task": 0}
+
+    class Session:
+        def __enter__(self) -> Session:
+            depth["session"] += 1
+            events.append("session.enter")
+            return self
+
+        def __exit__(self, *exc: Any) -> bool:
+            depth["session"] -= 1
+            events.append("session.exit")
+            return False
+
+    class Task:
+        def __enter__(self) -> Task:
+            if depth["session"] < 1:
+                raise RuntimeError("task() requires an active session")
+            depth["task"] += 1
+            events.append("task.enter")
+            return self
+
+        def __exit__(self, *exc: Any) -> bool:
+            depth["task"] -= 1
+            events.append("task.exit")
+            return False
+
+    class Llm:
+        def __enter__(self) -> Llm:
+            if depth["task"] < 1:
+                raise RuntimeError("llm_call() must be nested inside task()")
+            events.append("llm.enter")
+            return self
+
+        def __exit__(self, *exc: Any) -> bool:
+            events.append("llm.exit")
+            return False
+
+        def set(self, **attrs: Any) -> None:
+            pass
+
+    module = types.ModuleType("agenthack.telemetry")
+
+    class Telemetry:
+        export_enabled = True
+
+        def session(self, *args: Any) -> Session:
+            return Session()
+
+        def flush(self) -> None:
+            events.append("flush")
+
+        def shutdown(self) -> None:
+            pass
+
+    module.Telemetry = Telemetry  # type: ignore[attr-defined]
+    module.task = lambda: Task()  # type: ignore[attr-defined]
+    module.llm_call = lambda model, provider, endpoint=None, streaming=False: Llm()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "agenthack.telemetry", module)
+    telemetry.reset_cache()
+
+    import json
+
+    import httpx
+
+    answer = json.dumps({"answer": "答", "clarifying_question": "问？"}, ensure_ascii=False)
+    completion = {
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": answer},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+    settings = Settings.from_env(base_env)
+    gateway = HttpGateway(
+        settings.gateway,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=completion)),
+    )
+    task_payload = {
+        "case_id": "A-01",
+        "function": "Chat",
+        "title": "拓扑测试",
+        "input": "解释并提问。",
+        "materials": [],
+        "constraints": [],
+        "expected_output": "解释并提问。",
+        "output_schema_ref": "Chat",
+    }
+    with TestClient(create_app(settings, gateway=gateway)) as client:
+        response = client.post("/solve", json=task_payload)
+        trace = list(events)
+    assert response.status_code == 200, response.text
+    # 关闭 lifespan 还会再 flush 一次，这里只断言请求本身的拓扑
+    assert trace == [
+        "session.enter",
+        "task.enter",
+        "llm.enter",
+        "llm.exit",
+        "task.exit",
+        "session.exit",
+        "flush",
+    ]

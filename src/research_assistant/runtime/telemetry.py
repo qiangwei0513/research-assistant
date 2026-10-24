@@ -190,7 +190,12 @@ def llm_span(model: str, *, endpoint: str | None = None, streaming: bool = False
     if factory is None:
         yield None
         return
-    manager = factory(model, "openai-compatible", endpoint=endpoint, streaming=streaming)
+    try:
+        manager = factory(model, "openai-compatible", endpoint=endpoint, streaming=streaming)
+    except Exception as exc:
+        _LOG.warning("telemetry.llm_span_unavailable", reason=exc.__class__.__name__)
+        yield None
+        return
     try:
         op = manager.__enter__()
     except Exception as exc:
@@ -207,3 +212,46 @@ def llm_span(model: str, *, endpoint: str | None = None, streaming: bool = False
             manager.__exit__(None, None, None)
         except Exception as exc:
             _LOG.warning("telemetry.llm_span_exit_failed", reason=exc.__class__.__name__)
+
+
+@contextmanager
+def task_span():
+    """为一次 /solve 产出业务 task span，补齐 session → task → llm 的拓扑。
+
+    平台报错 AGENT_RUNTIME_TRACE_MISSING 的直接原因：之前只有 session 与 llm 两层，
+    没有 `task()` 这个「solve 调用」span。SDK 的 AgentRuntime 是
+    `with telemetry.session(...): with task():`，task() 里再用 llm_call 埋点。
+    这里保持同一拓扑，但不用它的路由。
+
+    注意：SDK 的 task() 要求 current_session()，所以本函数必须嵌在 trace_session 内使用；
+    无 SDK 或不在 session 内时退化为 no-op，绝不影响答题。
+    """
+    module = _import_module("agenthack.telemetry")
+    factory = getattr(module, "task", None) if module is not None else None
+    if factory is None:
+        yield None
+        return
+    manager = None
+    try:
+        manager = factory()
+        op = manager.__enter__()
+    except Exception as exc:
+        _LOG.warning("telemetry.task_span_unavailable", reason=exc.__class__.__name__)
+        yield None
+        return
+    try:
+        yield op
+    except BaseException as exc:
+        # 同 trace_session：业务异常必须原样上抛，不能被导出失败顶替
+        try:
+            suppressed = manager.__exit__(type(exc), exc, exc.__traceback__)
+        except Exception as exit_exc:
+            _LOG.warning("telemetry.task_span_exit_failed", reason=exit_exc.__class__.__name__)
+            raise exc from None
+        if not suppressed:
+            raise
+    else:
+        try:
+            manager.__exit__(None, None, None)
+        except Exception as exc:
+            _LOG.warning("telemetry.task_span_exit_failed", reason=exc.__class__.__name__)
