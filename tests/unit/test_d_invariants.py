@@ -327,3 +327,176 @@ def test_d05_served_ms_must_include_zero_service_flows() -> None:
 def test_unknown_case_id_is_a_no_op() -> None:
     assert check_invariants("D-99", {"data": {}}, {}) == []
     assert check_invariants("D-01", {}, {}) == []
+
+
+# --- D-05 换流 setup（参考模拟器发现的真实缺陷） ---
+
+
+def d05_setup_data(setup_ms: float = 2.0) -> dict[str, Any]:
+    """对应公开样例「空闲间隔与流切换」：单服务端、A 流后接 B 流、中间有空闲。"""
+    return {
+        "jobs": [
+            {"id": "task_1", "flow": "A", "arrival_ms": 0, "service_ms": 1, "deadline_ms": 12},
+            {"id": "task_2", "flow": "B", "arrival_ms": 5, "service_ms": 1, "deadline_ms": 12},
+        ],
+        "flow_weights": {"A": 1.0, "B": 2.0, "ZERO": 1.0},
+        "servers": 1,
+        "setup_ms": setup_ms,
+        "horizon_ms": 12,
+    }
+
+
+def _run_with(trace: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "baseline": {
+            "trace": trace,
+            "dropped": [],
+            "served_ms": {"A": 1.0, "B": 1.0, "ZERO": 0.0},
+        },
+        "candidate": None,
+    }
+
+
+def test_d05_flow_switch_after_idle_must_pay_setup() -> None:
+    """实测缺陷：模型漏算换流 setup，空闲之后尤其容易漏。
+
+    规则明写「同服务端换流付 setup，首次无 setup，空闲不清除上一流」，
+    所以 task_2（B 流）在 task_1（A 流）之后必须付 setup=2，start=7 而非 5。
+    """
+    payload = {"case_id": "D-05", "phase": "run", "data": d05_setup_data()}
+    wrong = _run_with(
+        [
+            trace_entry("task_1", flow="A", dispatch_ms=0, setup_ms=0, start_ms=0, end_ms=1),
+            trace_entry("task_2", flow="B", dispatch_ms=5, setup_ms=0, start_ms=5, end_ms=6),
+        ]
+    )
+    problems = check_invariants("D-05", payload, wrong)
+    assert any("setup_ms 应为 2.0" in p and "空闲不清除上一流" in p for p in problems)
+
+
+def test_d05_correct_flow_switch_setup_passes() -> None:
+    payload = {"case_id": "D-05", "phase": "run", "data": d05_setup_data()}
+    right = _run_with(
+        [
+            trace_entry(
+                "task_1",
+                flow="A",
+                arrival_ms=0,
+                service_ms=1,
+                deadline_ms=12,
+                server=0,
+                dispatch_ms=0,
+                setup_ms=0,
+                start_ms=0,
+                end_ms=1,
+                wait_ms=0,
+            ),
+            trace_entry(
+                "task_2",
+                flow="B",
+                arrival_ms=5,
+                service_ms=1,
+                deadline_ms=12,
+                server=0,
+                dispatch_ms=5,
+                setup_ms=2,
+                start_ms=7,
+                end_ms=8,
+                wait_ms=2,
+            ),
+        ]
+    )
+    assert check_invariants("D-05", payload, right) == []
+
+
+def test_d05_same_flow_consecutively_pays_no_setup() -> None:
+    payload = {"case_id": "D-05", "phase": "run", "data": d05_setup_data()}
+    run = _run_with(
+        [
+            trace_entry("task_1", flow="A", dispatch_ms=0, setup_ms=0, start_ms=0, end_ms=1),
+            trace_entry(
+                "task_2",
+                flow="A",
+                arrival_ms=5,
+                dispatch_ms=5,
+                setup_ms=0,
+                start_ms=5,
+                end_ms=6,
+                wait_ms=0,
+            ),
+        ]
+    )
+    assert check_invariants("D-05", payload, run) == []
+
+
+def test_d05_spurious_setup_on_the_first_dispatch_is_flagged() -> None:
+    payload = {"case_id": "D-05", "phase": "run", "data": d05_setup_data()}
+    run = _run_with(
+        [
+            trace_entry("task_1", flow="A", dispatch_ms=0, setup_ms=2, start_ms=2, end_ms=3),
+            trace_entry(
+                "task_2",
+                flow="B",
+                arrival_ms=5,
+                dispatch_ms=5,
+                setup_ms=2,
+                start_ms=7,
+                end_ms=8,
+                wait_ms=2,
+            ),
+        ]
+    )
+    problems = check_invariants("D-05", payload, run)
+    assert any("首次派发" in p for p in problems)
+
+
+def test_d05_setup_check_is_per_server() -> None:
+    """不同服务端各自独立记「上一流」，不能跨服务端串味。"""
+    data = {**d05_setup_data(), "servers": 2}
+    payload = {"case_id": "D-05", "phase": "run", "data": data}
+    run = {
+        "baseline": {
+            "trace": [
+                trace_entry(
+                    "task_1", flow="A", server=0, dispatch_ms=0, setup_ms=0, start_ms=0, end_ms=1
+                ),
+                trace_entry(
+                    "task_2",
+                    flow="B",
+                    arrival_ms=5,
+                    server=1,
+                    dispatch_ms=5,
+                    setup_ms=0,
+                    start_ms=5,
+                    end_ms=6,
+                    wait_ms=0,
+                ),
+            ],
+            "dropped": [],
+            "served_ms": {"A": 1.0, "B": 1.0, "ZERO": 0.0},
+        },
+        "candidate": None,
+    }
+    # server 1 上 task_2 是首次派发，setup 必须为 0，即使 server 0 上一股是 A 流
+    assert check_invariants("D-05", payload, run) == []
+
+
+def test_d05_setup_check_is_skipped_when_setup_ms_is_absent() -> None:
+    data = {k: v for k, v in d05_setup_data().items() if k != "setup_ms"}
+    payload = {"case_id": "D-05", "phase": "run", "data": data}
+    run = _run_with(
+        [
+            trace_entry("task_1", flow="A", dispatch_ms=0, setup_ms=0, start_ms=0, end_ms=1),
+            trace_entry(
+                "task_2",
+                flow="B",
+                arrival_ms=5,
+                dispatch_ms=5,
+                setup_ms=0,
+                start_ms=5,
+                end_ms=6,
+                wait_ms=0,
+            ),
+        ]
+    )
+    assert check_invariants("D-05", payload, run) == []

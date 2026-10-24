@@ -169,6 +169,66 @@ def _check_d02(payload: Mapping[str, object], result: Mapping[str, object]) -> l
     return problems
 
 
+def _check_setup_consistency(
+    name: str, trace: Sequence[Mapping[str, object]], data: Mapping[str, object]
+) -> list[str]:
+    """换流 setup 的局部校验：不需要完整模拟即可抓住最致命的时序错误。
+
+    规则（总纲 §6.5）：同服务端换流付 setup，首次无 setup，**空闲不清除上一流**。
+    因此把 trace 按服务端分组、再按派发时刻排序后，相邻两次派发之间：
+      - 该服务端的第一次派发 → setup_ms 必须为 0
+      - 与前一次同流 → setup_ms 必须为 0
+      - 与前一次不同流 → setup_ms 必须等于 data.setup_ms
+
+    实测教训：模型生成的实现漏算了换流 setup（空闲之后尤其容易漏），于是让一个
+    「加上 setup 就会 start>=deadline」的任务被违规派发，公开样例
+    `空闲间隔与流切换` 与 `拒绝后同服务器重试` 全部算错。这个错误能通过全部
+    结构性不变量（任务守恒、start<deadline、end<=horizon 都成立），
+    只有把 setup 与派发次序对上才能发现。完整的逐事件参考模拟在
+    scripts/simulate_d05_reference.py，那是开发期校验器、不进镜像。
+    """
+    setup_ms = data.get("setup_ms")
+    if setup_ms is None:
+        return []
+    try:
+        expected_setup = float(setup_ms)
+    except (TypeError, ValueError):
+        return []
+
+    by_server: dict[object, list[Mapping[str, object]]] = {}
+    for item in trace:
+        if not isinstance(item, Mapping):
+            continue
+        by_server.setdefault(item.get("server"), []).append(item)
+
+    problems: list[str] = []
+    for server, items in by_server.items():
+        try:
+            ordered = sorted(items, key=lambda t: (float(t["dispatch_ms"]), str(t["id"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+        previous_flow: object = None
+        for position, item in enumerate(ordered):
+            try:
+                actual = float(item.get("setup_ms", 0))
+            except (TypeError, ValueError):
+                continue
+            flow = item.get("flow")
+            if position == 0 or flow == previous_flow:
+                want = 0.0
+                why = "该服务端首次派发" if position == 0 else "与前一次同流"
+            else:
+                want = expected_setup
+                why = f"换流（{previous_flow} → {flow}），且空闲不清除上一流"
+            if abs(actual - want) > 1e-9:
+                problems.append(
+                    f"{name} 中 {item.get('id')} 在 server {server} 的 setup_ms 应为 {want}"
+                    f"（{why}），实际 {actual}"
+                )
+            previous_flow = flow
+    return problems
+
+
 def _check_d05(data: Mapping[str, object], result: Mapping[str, object]) -> list[str]:
     problems: list[str] = []
     jobs = data.get("jobs")
@@ -217,6 +277,8 @@ def _check_d05(data: Mapping[str, object], result: Mapping[str, object]) -> list
                 problems.append(
                     f"{name} 中 {item.get('id')} 的 end>horizon；end==horizon 可完成，超出则不得派发"
                 )
+        problems.extend(_check_setup_consistency(name, trace, data))
+
         served = run.get("served_ms")
         weights = data.get("flow_weights")
         if isinstance(served, Mapping) and isinstance(weights, Mapping):
