@@ -72,6 +72,7 @@ def good_survey_markdown() -> str:
 
 def good_idea_markdown() -> str:
     sections = {
+        "复现瓶颈与模拟观察": "题面未提供实际复现记录。我们假设时相变化限制绿地温度关系的迁移，拟加入分季校正，并用关闭校正的消融比较跨季误差，以否定或支持这一机制假设。",
         "研究问题与边界": long_sentence("研究问题的界定")
         + "；"
         + long_sentence("不纳入范围的部分")
@@ -765,3 +766,49 @@ def test_context_error_detection_matches_real_gateway_wording() -> None:
         assert is_context_length_error(message), message
     assert not is_context_length_error("gateway returned HTTP 502 during survey.generate")
     assert not is_context_length_error("upstream timeout")
+
+
+@pytest.mark.parametrize("kind", ["survey", "idea"])
+@pytest.mark.parametrize("repair", ["error", "short"])
+def test_optional_repair_preserves_valid_draft_on_failure(
+    base_env, five_papers, papers_root, tmp_workspace, kind, repair
+):
+    from research_assistant.errors import GatewayError
+
+    draft = "# 初稿\n\n" + (long_sentence("已有证据与方法比较") + "。") * 30
+    if kind == "survey":
+        draft += "\n\n[9] [10] [11]\n\n## 参考文献\n[1] " + P1
+        short = good_survey_markdown()[:100] + "\n\n## 参考文献\n[1] " + P1
+        request, handler = survey_task(five_papers), solve_survey
+    else:
+        short = "\n\n".join("## " + section + "\n具体方案。" for section in REQUIRED_SECTIONS)
+        request, handler = idea_task(five_papers), solve_idea
+    second = GatewayError("test timeout") if repair == "error" else short
+    context = context_for(base_env, request, [draft, second], papers_root, tmp_workspace)
+    result = handler(request, context)
+    assert len(context.gateway.calls) == 2
+    assert result["markdown"] == draft.strip()
+    assert (tmp_workspace / result["path"]).read_text() == draft.strip()
+
+
+def test_idea_accepts_repair_that_only_fixes_citations(
+    base_env, five_papers, papers_root, tmp_workspace
+):
+    import re
+
+    repaired = good_idea_markdown()
+    head, references = repaired.split("## 参考文献", 1)
+    draft = re.sub(r"\[\d+\]", "", head) + "## 参考文献" + references
+    task = idea_task(five_papers)
+    context = context_for(base_env, task, [draft, repaired], papers_root, tmp_workspace)
+    result = solve_idea(task, context)
+    assert result["markdown"] == repaired.strip()
+
+
+def test_idea_requires_substantive_bottleneck_reflection():
+    import re
+
+    markdown = re.sub(r"## 复现瓶颈与模拟观察.*?(?=## )", "", good_idea_markdown(), flags=re.S)
+    assert "复现瓶颈与模拟观察" in check_idea_report(markdown).missing_sections
+    with_empty_heading = markdown + "\n\n## 复现瓶颈与模拟观察\n待补充。"
+    assert "复现瓶颈与模拟观察" in check_idea_report(with_empty_heading).missing_sections

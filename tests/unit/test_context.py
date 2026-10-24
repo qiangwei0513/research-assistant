@@ -201,3 +201,45 @@ def test_budget_is_configurable(base_env: dict[str, str]) -> None:
         gateway=FakeGateway(["x"]),
     )
     assert context.deadline.budget_seconds == 42.0
+
+
+@pytest.mark.parametrize("scope", ["本地论文文件夹内的 PDF", ".", "papers"])
+def test_retrieval_expands_explicit_library_scope(base_env, papers_root, scope):
+    (papers_root / "papers").mkdir(exist_ok=True)
+    (papers_root / "papers" / "Inside.PDF").write_bytes(b"pdf")
+    (papers_root / "Outside.pdf").write_bytes(b"pdf")
+    (papers_root / "notes.txt").write_text("not a paper")
+    request = task(
+        case_id="B-01",
+        function="Literature_Retrieval",
+        output_schema_ref="Literature_Retrieval",
+        materials=[scope],
+    )
+    context = load_task_context(request, settings_for(base_env), gateway=FakeGateway([]))
+    expected = {"papers/Inside.PDF"} if scope == "papers" else {"papers/Inside.PDF", "Outside.pdf"}
+    assert set(context.materials) == expected
+    assert context.allowed_materials == frozenset(expected)
+
+
+def test_missing_named_retrieval_file_does_not_authorize_whole_library(base_env, papers_root):
+    (papers_root / "Other.pdf").write_bytes(b"pdf")
+    request = task(
+        case_id="B-01",
+        function="Literature_Retrieval",
+        output_schema_ref="Literature_Retrieval",
+        materials=["Missing.pdf"],
+    )
+    assert load_task_context(request, settings_for(base_env)).materials == ()
+
+
+def test_library_scope_does_not_follow_outside_symlink(base_env, papers_root, tmp_path):
+    outside = tmp_path / "private.pdf"
+    outside.write_bytes(b"private")
+    (papers_root / "Escape.pdf").symlink_to(outside)
+    request = task(
+        case_id="B-01",
+        function="Literature_Retrieval",
+        output_schema_ref="Literature_Retrieval",
+        materials=["本地论文文件夹内的 PDF"],
+    )
+    assert load_task_context(request, settings_for(base_env)).materials == ()

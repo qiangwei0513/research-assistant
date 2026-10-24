@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from research_assistant.contracts.results import MIN_BODY_CHARACTERS, idea_result
@@ -28,7 +28,7 @@ from research_assistant.documents.evidence import (
     shrink_budget,
 )
 from research_assistant.documents.extractor import extract_documents
-from research_assistant.errors import GatewayError
+from research_assistant.errors import BudgetExhausted, GatewayError
 from research_assistant.runtime.gateway import Message
 from research_assistant.runtime.modelcall import complete_parsed
 from research_assistant.runtime.persistence import write_text_verified
@@ -53,6 +53,7 @@ MIN_TECHNICAL_CHARACTERS = 200
 REQUIRED_SECTIONS: tuple[str, ...] = (
     "研究问题与边界",
     "动机与已有局限",
+    "复现瓶颈与模拟观察",
     "核心机制",
     "技术路线",
     "基线与改进组",
@@ -239,7 +240,10 @@ def check_idea_report(markdown: str) -> IdeaCheck:
     headings = [h.strip() for h in _HEADING_LINE.findall(markdown)]
     joined_headings = " ".join(headings)
     missing_sections = tuple(
-        section for section in REQUIRED_SECTIONS if section not in joined_headings
+        section
+        for section in REQUIRED_SECTIONS
+        if section not in joined_headings
+        or (section == "复现瓶颈与模拟观察" and len(_section_body(markdown, section).strip()) < 40)
     )
     missing_boundary = tuple(
         statement
@@ -290,6 +294,8 @@ SYSTEM_PROMPT = (
     + "\n".join(f"   - {name}" for name in REQUIRED_SECTIONS)
     + "\n2. 「基线与改进组」必须给出明确的基线方法与改进方法及其比较方式；"
     "「量化指标」必须给出可测量的指标名与预期数值变化。\n"
+    "「复现瓶颈与模拟观察」须串联题面观察、暴露的机制限制、所提改动和证伪消融；"
+    "题目未给出观察时明确说明未提供，提出待验证瓶颈假设，不得捏造已发生的复现。\n"
     "3. 「多文献互补」要说明各指定论文分别提供了什么、缺口在哪里，"
     "并标注引用编号 [n]。\n"
     "4. 证据边界必须明确写出："
@@ -358,6 +364,7 @@ def _unavailable_idea(task: Task, context: SolveContext, report: Any) -> Mapping
     notes = {
         "研究问题与边界": "问题仍来自本题要求；由于授权材料不可读，研究边界暂不能依据原文细化。",
         "动机与已有局限": "无法核验原文所述局限，因此不给出具体文献判断，仅保留待核验位置。",
+        "复现瓶颈与模拟观察": "仅能讨论题目明确给出的模拟观察，不能假定发生过真实复现；材料恢复后需核对原方法的机制限制，再设计针对性的改动与证伪消融。",
         "核心机制": "机制假设需由原文证据支撑；材料缺失时只登记假设，不写成已证实结论。",
         "技术路线": "恢复材料后按“读取—提取—对齐—评估”推进；当前仅保留流程定义。",
         "基线与改进组": "基线需从原文实验设置中提取；当前不指定具体数值或方法名。",
@@ -449,41 +456,57 @@ def solve_idea(task: Task, context: SolveContext) -> Mapping[str, Any]:
     _log_check(context, check, citations, "generate")
 
     problems = list(check.problems)
-    if not citations.has_body_citations and pack.entries:
-        problems.append("正文没有任何 [编号] 引用；多文献互补无法核验。")
+    problems.extend(issue.detail for issue in citations.issues)
     if problems and context.deadline.remaining() > REPAIR_BUDGET_SECONDS:
-        repaired = context.gateway.complete(
-            (
-                Message(role="system", content=SYSTEM_PROMPT),
-                Message(role="user", content=build_user_prompt(task, pack)),
-                Message(role="assistant", content=markdown),
-                Message(
-                    role="user",
-                    content=(
-                        "自检发现以下会被扣分的具体问题。请在不编造事实、不新增未授权材料、"
-                        "不改变已有引用编号含义的前提下重写整篇方案修掉它们：\n"
-                        + "\n".join(f"- {p}" for p in problems)
-                        + "\n\n只输出修改后的完整 Markdown 正文，不要代码围栏、不要解释。"
+        try:
+            repaired = context.gateway.complete(
+                (
+                    Message(role="system", content=SYSTEM_PROMPT),
+                    Message(role="user", content=build_user_prompt(task, pack)),
+                    Message(role="assistant", content=markdown),
+                    Message(
+                        role="user",
+                        content=(
+                            "自检发现以下会被扣分的具体问题。请在不编造事实、不新增未授权材料、"
+                            "不改变已有引用编号含义的前提下重写整篇方案修掉它们：\n"
+                            + "\n".join(f"- {p}" for p in problems)
+                            + "\n\n只输出修改后的完整 Markdown 正文，不要代码围栏、不要解释。"
+                        ),
                     ),
                 ),
-            ),
-            context=context,
-            stage=STAGE_REPAIR,
-            max_tokens=MAX_TOKENS,
-        )
-        candidate = _strip_code_fence(repaired.content)
-        candidate_check = check_idea_report(candidate)
-        # 只有问题确实变少才采用，避免修复反而破坏原稿
-        if candidate.strip() and len(candidate_check.problems) < len(check.problems):
-            markdown, check = candidate, candidate_check
-            citations = analyze_citations(markdown, allowed)
-            context.log.info("idea.repair_applied", case_id=task.case_id)
-        else:
-            context.log.info(
-                "idea.repair_rejected",
+                context=replace(
+                    context,
+                    deadline=replace(
+                        context.deadline, budget_seconds=context.deadline.budget_seconds - 5.0
+                    ),
+                ),
+                stage=STAGE_REPAIR,
+                max_tokens=MAX_TOKENS,
+            )
+            candidate = _parse_markdown(repaired.content)
+            candidate_check = check_idea_report(candidate)
+            candidate_citations = analyze_citations(candidate, allowed)
+            candidate_problem_count = len(candidate_check.problems) + len(
+                candidate_citations.issues
+            )
+            # 使用与触发修复一致的内容/引文检查，并禁止已有引文质量退化。
+            if candidate_problem_count < len(problems) and len(candidate_citations.issues) <= len(
+                citations.issues
+            ):
+                markdown, check, citations = candidate, candidate_check, candidate_citations
+                context.log.info("idea.repair_applied", case_id=task.case_id)
+            else:
+                context.log.info(
+                    "idea.repair_rejected",
+                    case_id=task.case_id,
+                    before=len(check.problems),
+                    after=len(candidate_check.problems),
+                )
+        except (GatewayError, BudgetExhausted) as exc:
+            context.log.warning(
+                "idea.repair_failed_preserving_draft",
                 case_id=task.case_id,
-                before=len(check.problems),
-                after=len(candidate_check.problems),
+                error_type=type(exc).__name__,
             )
         _log_check(context, check, citations, "repair")
 

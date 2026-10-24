@@ -149,7 +149,7 @@ def run_self_test(
     """在受限子进程里逐个跑自测用例，并比对算法不变量。
 
     任一用例运行失败、输出非法或违反不变量都算整体失败，并带回可诊断的错误摘要——
-    该摘要会回传给同一会话模型用于完整重生成。
+    该摘要会回传给同一会话模型用于完整重生成。timeout 是整批共享墙钟额度。
     """
     import time
 
@@ -170,6 +170,10 @@ def run_self_test(
     keys: tuple[str, ...] = ()
 
     for case in cases:
+        remaining = timeout - (time.monotonic() - started)
+        if remaining <= 0:
+            first_error = first_error or "自测整批预算耗尽"
+            break
         request_file = work_dir / f"_selftest_{case.name}.json"
         request_file.write_text(json.dumps(case.payload, ensure_ascii=False), encoding="utf-8")
         runner.write_text(
@@ -197,13 +201,13 @@ def run_self_test(
                 command,
                 capture_output=True,
                 text=True,
-                timeout=max(1.0, timeout),
+                timeout=remaining,
                 cwd=str(work_dir),
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            first_error = first_error or f"{case.name}: 自测超时（>{timeout:.0f}s）"
-            continue
+            first_error = first_error or f"{case.name}: 自测整批超时（>{timeout:.2f}s）"
+            break
         except OSError as exc:
             first_error = first_error or f"{case.name}: 无法启动自测子进程 {exc.__class__.__name__}"
             continue

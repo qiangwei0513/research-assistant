@@ -9,7 +9,10 @@ pypdf 是纯 Python、零强制依赖，基础镜像不含任何 PDF 库，因�
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import sys
 import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -275,7 +278,7 @@ def _extract_text(path: Path, filename: str, digest: str) -> Document:
     )
 
 
-def extract_one(path: Path, *, filename: str) -> Document:
+def _extract_one(path: Path, *, filename: str) -> Document:
     """解析单个已授权文件。路径必须已由 WorkspacePaths 校验过。"""
     digest = sha256_of(path)
     suffix = path.suffix.lower()
@@ -291,6 +294,63 @@ def extract_one(path: Path, *, filename: str) -> Document:
         status_reason=f"no extractor for suffix {suffix or '(none)'}",
         extractor="none",
     )
+
+
+def _failed_document(
+    path: Path, filename: str, reason: str, *, timed_out: bool = False
+) -> Document:
+    return Document(
+        filename=filename,
+        path=path,
+        content_sha256="",
+        status=ParseStatus.TIMEOUT if timed_out else ParseStatus.CORRUPT,
+        status_reason=reason,
+        extractor=EXTRACTOR_NAME,
+    )
+
+
+def extract_one(path: Path, *, filename: str) -> Document:
+    """提取单篇授权材料；读取或解析异常记录为失败，不影响同批其他论文。"""
+    try:
+        return _extract_one(path, filename=filename)
+    except Exception as exc:
+        # 不把任意解析器异常消息（可能含文件内容）放进报告。
+        return _failed_document(path, filename, f"extraction failed: {type(exc).__name__}")
+
+
+def _extract_with_timeout(path: Path, filename: str, timeout: float) -> Document:
+    """由父进程掌握墙钟预算；超时 kill + wait，不能遗留后台解析线程。"""
+    if timeout <= 0:
+        return _failed_document(path, filename, "extraction budget exhausted", timed_out=True)
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "research_assistant.documents.worker", str(path), filename],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+            check=False,
+        )
+        if completed.returncode != 0:
+            return _failed_document(path, filename, f"extractor exited with {completed.returncode}")
+        payload = json.loads(completed.stdout)
+        metadata = payload["metadata"]
+        metadata["authors"] = tuple(metadata["authors"])
+        metadata["keywords"] = tuple(metadata["keywords"])
+        return Document(
+            filename=filename,
+            path=path,
+            content_sha256=payload["content_sha256"],
+            status=ParseStatus(payload["status"]),
+            status_reason=payload["status_reason"],
+            extractor=payload["extractor"],
+            metadata=DocumentMetadata(**metadata),
+            pages=tuple(PageText(**page) for page in payload["pages"]),
+        )
+    except subprocess.TimeoutExpired:
+        return _failed_document(path, filename, "extraction budget exhausted", timed_out=True)
+    except Exception as exc:
+        return _failed_document(path, filename, f"extractor failed: {type(exc).__name__}")
 
 
 def extract_documents(
@@ -367,7 +427,11 @@ def extract_documents(
                 log.warning("documents.missing", filename=material)
             continue
 
-        document = extract_one(path, filename=material)
+        if time_budget_seconds is None:
+            document = extract_one(path, filename=material)
+        else:
+            remaining = time_budget_seconds - (time.monotonic() - started)
+            document = _extract_with_timeout(path, material, remaining)
         documents.append(document)
         if log is not None:
             log.info(

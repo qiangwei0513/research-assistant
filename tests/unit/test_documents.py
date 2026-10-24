@@ -368,3 +368,69 @@ def test_batch_extraction_stops_at_the_time_budget(
     """整库很大时必须能提前收手：把时间留给模型与落盘，而不是解析到超时。"""
     report = extract_documents(paper_library, workspace, time_budget_seconds=0)
     assert not report.documents
+
+
+def test_batch_isolates_extractor_failures(workspace, monkeypatch):
+    from research_assistant.documents import extractor
+
+    (workspace.papers_root / "bad.pdf").write_bytes(b"bad")
+    (workspace.papers_root / "good.txt").write_text("Useful scientific evidence", encoding="utf-8")
+    original = extractor.sha256_of
+
+    def unreadable(path):
+        if path.name == "bad.pdf":
+            raise PermissionError("cannot read")
+        return original(path)
+
+    monkeypatch.setattr(extractor, "sha256_of", unreadable)
+    report = extract_documents(["bad.pdf", "good.txt"], workspace)
+    assert report.documents[0].status is ParseStatus.CORRUPT
+    assert "PermissionError" in report.documents[0].status_reason
+    assert report.documents[1].usable
+
+
+def test_bounded_extraction_matches_direct_pdf(workspace, paper_library):
+    name = paper_library[0]
+    expected = extract_one(workspace.paper(name), filename=name)
+    report = extract_documents([name], workspace, time_budget_seconds=10)
+    assert report.documents == (expected,)
+
+
+def test_bounded_extraction_kills_hung_worker(workspace, monkeypatch, tmp_path):
+    import subprocess
+    import sys
+    import time
+
+    (workspace.papers_root / "slow.pdf").write_bytes(b"bad")
+    marker = tmp_path / "worker-survived"
+    original = subprocess.run
+
+    def hung_worker(command, **kwargs):
+        # A real child would leave a marker if the parent only abandoned a thread.
+        command = [
+            sys.executable,
+            "-c",
+            "import pathlib,time; time.sleep(1); pathlib.Path(__import__('sys').argv[1]).touch()",
+            str(marker),
+        ]
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", hung_worker)
+    started = time.monotonic()
+    report = extract_documents(["slow.pdf"], workspace, time_budget_seconds=0.15)
+    assert time.monotonic() - started < 0.8
+    assert report.documents[0].status.value == "timeout"
+    time.sleep(1.1)
+    assert not marker.exists()
+
+
+def test_bounded_extraction_worker_crash_is_visible(workspace, monkeypatch):
+    import subprocess
+
+    (workspace.papers_root / "broken.pdf").write_bytes(b"bad")
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a[0], 7, "", "error")
+    )
+    report = extract_documents(["broken.pdf"], workspace, time_budget_seconds=10)
+    assert report.documents[0].status is ParseStatus.CORRUPT
+    assert "7" in report.documents[0].status_reason

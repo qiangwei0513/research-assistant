@@ -124,7 +124,7 @@ RETRIEVAL_TASK = {
         "查找使用遥感手段研究城市绿地覆盖率与地表温度关系的论文，重点关注城市热环境；"
         "排除只讨论图像分割算法而不涉及温度的工作，也排除与城市热环境无关的电池回收研究。"
     ),
-    "materials": PAPER_NAMES,
+    "materials": ["本地论文文件夹内的 PDF"],
     "constraints": ["只返回本地实际存在的 PDF", "每篇论文提供唯一的完整 PDF 文件名和具体匹配理由"],
     "expected_output": "按相关性从高到低排列的论文列表与理由。",
     "output_schema_ref": "Literature_Retrieval",

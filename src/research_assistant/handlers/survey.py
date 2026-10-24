@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from research_assistant.contracts.results import MIN_BODY_CHARACTERS, survey_result
@@ -25,7 +26,7 @@ from research_assistant.documents.evidence import (
     shrink_budget,
 )
 from research_assistant.documents.extractor import extract_documents
-from research_assistant.errors import GatewayError
+from research_assistant.errors import BudgetExhausted, GatewayError
 from research_assistant.runtime.gateway import Message
 from research_assistant.runtime.modelcall import complete_parsed
 from research_assistant.validation.citations import (
@@ -266,24 +267,36 @@ def solve_survey(task: Task, context: SolveContext) -> Mapping[str, Any]:
                 ),
             ),
         )
-        repaired = context.gateway.complete(
-            repair_messages,
-            context=context,
-            stage=STAGE_REPAIR,
-            max_tokens=REPAIR_MAX_TOKENS,
-        )
-        candidate = _strip_code_fence(repaired.content)
-        candidate_analysis = analyze_citations(candidate, allowed)
-        # 只有确实变好才采用；否则保留原稿，避免修复反而破坏正文
-        if len(candidate_analysis.issues) < len(analysis.issues) and candidate.strip():
-            markdown, analysis = candidate, candidate_analysis
-            context.log.info("survey.repair_applied", case_id=task.case_id)
-        else:
-            context.log.info(
-                "survey.repair_rejected",
+        try:
+            repaired = context.gateway.complete(
+                repair_messages,
+                context=replace(
+                    context,
+                    deadline=replace(
+                        context.deadline, budget_seconds=context.deadline.budget_seconds - 5.0
+                    ),
+                ),
+                stage=STAGE_REPAIR,
+                max_tokens=REPAIR_MAX_TOKENS,
+            )
+            candidate = _parse_markdown(repaired.content)
+            candidate_analysis = analyze_citations(candidate, allowed)
+            # 只有确实变好才采用；否则保留原稿，避免修复反而破坏正文
+            if len(candidate_analysis.issues) < len(analysis.issues) and candidate.strip():
+                markdown, analysis = candidate, candidate_analysis
+                context.log.info("survey.repair_applied", case_id=task.case_id)
+            else:
+                context.log.info(
+                    "survey.repair_rejected",
+                    case_id=task.case_id,
+                    before=len(analysis.issues),
+                    after=len(candidate_analysis.issues),
+                )
+        except (GatewayError, BudgetExhausted) as exc:
+            context.log.warning(
+                "survey.repair_failed_preserving_draft",
                 case_id=task.case_id,
-                before=len(analysis.issues),
-                after=len(candidate_analysis.issues),
+                error_type=type(exc).__name__,
             )
         _log_analysis(context, analysis, "repair")
     elif hint.lines:

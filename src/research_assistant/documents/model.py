@@ -21,6 +21,7 @@ class ParseStatus(StrEnum):
     EMPTY = "empty"  # 可打开但无正文，通常是扫描件；资源允许时才 OCR
     ENCRYPTED = "encrypted"
     CORRUPT = "corrupt"
+    TIMEOUT = "timeout"  # 本批剩余解析时间用尽，不能当作无相关证据
     MISSING = "missing"
     UNSUPPORTED = "unsupported"
 

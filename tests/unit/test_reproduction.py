@@ -960,3 +960,90 @@ def test_no_self_test_cases_when_nothing_is_available(tmp_path: Path) -> None:
     (root / "D-01" / "protocol.json").write_text("{}", encoding="utf-8")
     materials = load_case_materials("D-01", root)
     assert build_self_test_cases(materials, root) == ()
+
+
+def test_generation_gateway_cannot_spend_reserved_experiment_budget(
+    base_env, papers_root, tmp_workspace, mounted_materials, monkeypatch
+):
+    task = reproduction_task()
+    context = context_for(base_env, task, [], papers_root, tmp_workspace)
+    observed = []
+
+    def complete(messages, *, context, stage, **kwargs):
+        observed.append(context.deadline.remaining())
+        return gateway_response(VALID_SOURCE)
+
+    monkeypatch.setattr(context.gateway, "complete", complete)
+    destination = context.work_dir / "implementation.py"
+    result = reproduction_handler._generate_source(
+        task,
+        context,
+        load_case_materials("D-01", mounted_materials),
+        destination,
+        mounted_materials,
+    )
+    assert result is not None
+    assert 100 < observed[0] <= 108
+    assert context.deadline.remaining() > 170
+
+
+def test_failed_regeneration_retains_previous_complete_source(
+    base_env, papers_root, tmp_workspace, mounted_materials, monkeypatch
+):
+    from research_assistant.errors import GatewayError
+    from research_assistant.reproduction.selftest import SelfTestResult
+
+    task = reproduction_task()
+    context = context_for(
+        base_env,
+        task,
+        [gateway_response(VALID_SOURCE), GatewayError("timeout")],
+        papers_root,
+        tmp_workspace,
+    )
+    monkeypatch.setattr(
+        reproduction_handler,
+        "run_self_test",
+        lambda *a, **kw: SelfTestResult(False, 1, 0, "bad algorithm", (), 0),
+    )
+    destination = context.work_dir / "implementation.py"
+    result = reproduction_handler._generate_source(
+        task,
+        context,
+        load_case_materials("D-01", mounted_materials),
+        destination,
+        mounted_materials,
+    )
+    assert result is not None and result[0] == VALID_SOURCE and not result[2]
+    assert destination.read_text() == VALID_SOURCE
+
+
+def test_generation_transport_failure_returns_schema_valid_failure(
+    base_env, papers_root, tmp_workspace, mounted_materials
+):
+    from research_assistant.errors import GatewayError
+
+    task = reproduction_task()
+    context = context_for(base_env, task, [GatewayError("timeout")], papers_root, tmp_workspace)
+    result = solve_reproduction(task, context)
+    assert result["status"] == "failed"
+    assert len(result["metrics"]) == 3
+    assert all(metric["observed"] is None for metric in result["metrics"])
+
+
+@pytest.mark.parametrize("old_status", ["completed", "failed"])
+def test_helper_failure_does_not_reuse_historical_result(tmp_path, old_status):
+    from research_assistant.reproduction.client import SubprocessExperimentClient
+
+    result_path = tmp_path / "data" / "team" / "D-01.json"
+    result_path.parent.mkdir(parents=True)
+    original = json.dumps(submission(old_status)).encode()
+    result_path.write_bytes(original)
+    helper = tmp_path / "helper.py"
+    helper.write_text("raise SystemExit(1)\n")
+    client = SubprocessExperimentClient(helper, result_root=tmp_path, team="team")
+    outcome = client.run("D-01", tmp_path / "implementation.py", timeout=5)
+    assert outcome.authoritative_submission is None
+    assert not outcome.produced_result_file
+    backups = list((result_path.parent / "work" / "D-01" / "previous-results").glob("*.json"))
+    assert len(backups) == 1 and backups[0].read_bytes() == original

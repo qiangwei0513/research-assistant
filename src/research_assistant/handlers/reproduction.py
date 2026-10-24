@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,7 +27,7 @@ from research_assistant.contracts.results import (
     reproduction_result,
 )
 from research_assistant.contracts.task import Task
-from research_assistant.errors import TaskContractError
+from research_assistant.errors import BudgetExhausted, GatewayError, TaskContractError
 from research_assistant.reproduction.client import (
     DEFAULT_HELPER_PATH,
     ExperimentClient,
@@ -132,7 +133,21 @@ def _generate_source(
                 remaining=round(context.deadline.remaining(), 2),
             )
             break
-        response = context.gateway.complete(messages, context=context, stage=stage)
+        generation_context = replace(
+            context,
+            deadline=replace(
+                context.deadline, budget_seconds=context.deadline.budget_seconds - reserve
+            ),
+        )
+        try:
+            response = context.gateway.complete(messages, context=generation_context, stage=stage)
+        except (GatewayError, BudgetExhausted) as exc:
+            last_error = f"generation failed: {type(exc).__name__}"
+            context.log.warning(
+                "reproduction.generation_failed", attempt=attempt, reason=last_error
+            )
+            # 保留已完整取得的源码；网络失败不能清除它，也不再耗预算盲目重试。
+            break
         try:
             # 提取工具接收的是**完整响应对象**，不是单独的 message.content
             source, digest = save_source(response.raw, destination)
@@ -156,7 +171,11 @@ def _generate_source(
             work_dir=context.work_dir,
             timeout=min(
                 DEFAULT_SELF_TEST_TIMEOUT,
-                max(2.0, context.deadline.remaining() - RESERVE_RUN_SECONDS),
+                RESERVE_SELF_TEST_SECONDS,
+                max(
+                    0.0,
+                    context.deadline.remaining() - RESERVE_RUN_SECONDS - RESERVE_PERSIST_SECONDS,
+                ),
             ),
             log=context.log,
         )

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from research_assistant.contracts.dispatch import DispatchRecord
-from research_assistant.contracts.task import Task
+from research_assistant.contracts.task import Task, TaskFunction
 from research_assistant.errors import ConfigError, PathAuthorizationError
 from research_assistant.runtime.deadline import Deadline
 from research_assistant.runtime.gateway import Gateway, HttpGateway, UnavailableGateway
@@ -132,6 +132,33 @@ def _resolve_material(
     return None
 
 
+# 官方 B 类输入示例明确用这个范围描述，而不是某个 PDF 的文件名。
+_LIBRARY_SCOPE_DESCRIPTIONS = frozenset({"本地论文文件夹内的 PDF"})
+
+
+def _retrieval_scope(
+    material: str, workspace: WorkspacePaths, log: BoundLogger
+) -> list[str] | None:
+    """仅展开明确授权的 B 类目录范围；缺失的具体文件绝不扩大为整库。"""
+    relative = "." if material in _LIBRARY_SCOPE_DESCRIPTIONS else material
+    directory = workspace.paper(relative)
+    if not directory.is_dir():
+        return None
+    found: list[str] = []
+    # rglob 不递归跟随目录符号链接；文件链接仍逐个走 workspace.paper 授权。
+    for entry in sorted(directory.rglob("*")):
+        if entry.suffix.lower() != ".pdf":
+            continue
+        name = entry.relative_to(workspace.papers_root.resolve()).as_posix()
+        try:
+            if workspace.paper(name).is_file():
+                found.append(name)
+        except (PathAuthorizationError, OSError):
+            log.warning("materials.scope_entry_rejected", filename=name[:200])
+    log.info("materials.library_scope", scope=material, files=len(found))
+    return found
+
+
 def _resolve_materials(task: Task, workspace: WorkspacePaths, log: BoundLogger) -> tuple[str, ...]:
     """只保留真实存在的材料，并保持题目给出的顺序。
 
@@ -147,6 +174,14 @@ def _resolve_materials(task: Task, workspace: WorkspacePaths, log: BoundLogger) 
     resolved: list[str] = []
     seen: set[str] = set()
     for material in task.materials:
+        if task.function is TaskFunction.LITERATURE_RETRIEVAL:
+            scoped = _retrieval_scope(material, workspace, log)
+            if scoped is not None:
+                for name in scoped:
+                    if name not in seen:
+                        seen.add(name)
+                        resolved.append(name)
+                continue
         found = _resolve_material(material, workspace, listing)
         if found is None:
             log.warning("materials.missing", filename=material[:200])
