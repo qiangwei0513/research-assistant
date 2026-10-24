@@ -74,6 +74,15 @@ def _read_group(
     return values
 
 
+def _comparable(key: str, value: str) -> str:
+    """比较两组的等价性时，只把 base_url 末尾的 `/` 视为无意义差异。
+
+    否则同一个网关写成 http://x/v1 与 http://x/v1/ 会被判成「两组冲突」而整个
+    禁用网关——这会让所有需要模型的题直接失败。
+    """
+    return value.rstrip("/") if key == "base_url" else value
+
+
 @dataclass(frozen=True)
 class Settings:
     gateway: GatewaySettings | None
@@ -103,14 +112,18 @@ class Settings:
         config_error: str | None = None
 
         if challenge is not None and platform is not None:
-            if challenge == platform:
+            if all(_comparable(k, challenge[k]) == _comparable(k, platform[k]) for k in challenge):
                 gateway = GatewaySettings(
                     family="challenge",
                     session_id=_clean(source, CHALLENGE_SESSION_VAR),
                     **challenge,
                 )
             else:
-                differing = sorted(k for k in challenge if challenge[k] != platform[k])
+                differing = sorted(
+                    k
+                    for k in challenge
+                    if _comparable(k, challenge[k]) != _comparable(k, platform[k])
+                )
                 config_error = (
                     "both CHALLENGE_LLM_* and PLATFORM_LLM_* groups are set but disagree on: "
                     + ", ".join(differing)
@@ -150,7 +163,9 @@ class Settings:
         return cls(
             gateway=gateway,
             gateway_config_error=config_error,
-            team=_clean(source, "RESEARCH_WORKSPACE_TEAM") or "",
+            # TEAM_ID 是 SDK 遥测约定的队伍标识；平台若不注入 RESEARCH_WORKSPACE_TEAM，
+            # 用它兜底，否则结果目录无从确定、每道题都会失败
+            team=(_clean(source, "RESEARCH_WORKSPACE_TEAM") or _clean(source, "TEAM_ID") or ""),
             workspace_root=Path(
                 _clean(source, "RESEARCH_WORKSPACE_ROOT") or DEFAULT_WORKSPACE_ROOT
             ),

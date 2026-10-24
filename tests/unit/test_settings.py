@@ -280,3 +280,43 @@ def test_from_env_without_argument_reports_missing_gateway(
     assert settings.papers_root == Path("/data/papers")
     assert settings.log_level == "INFO"
     assert settings.team == ""
+
+
+def test_trailing_slash_difference_alone_is_not_a_group_conflict() -> None:
+    """同一网关写成 /v1 与 /v1/ 是等价写法；误判成冲突会让所有模型题失败。"""
+    env = {
+        **CHALLENGE,
+        "PLATFORM_LLM_URL": "http://gw.invalid/v1/",
+        "PLATFORM_API_KEY": "sk-challenge",
+        "PLATFORM_LLM_MODEL": "model-c",
+    }
+    settings = Settings.from_env(env)
+    assert settings.gateway_config_error is None
+    assert settings.require_gateway().family == "challenge"
+
+
+def test_different_base_urls_still_conflict() -> None:
+    env = {
+        **CHALLENGE,
+        "PLATFORM_LLM_URL": "http://other.invalid/v1",
+        "PLATFORM_API_KEY": "sk-challenge",
+        "PLATFORM_LLM_MODEL": "model-c",
+    }
+    settings = Settings.from_env(env)
+    with pytest.raises(ConfigError) as excinfo:
+        settings.require_gateway()
+    assert "base_url" in str(excinfo.value)
+
+
+def test_team_id_is_used_when_explicit_team_variable_is_absent() -> None:
+    """SDK 遥测用 TEAM_ID 标识队伍；平台只注入它时不能导致所有题失败。"""
+    settings = Settings.from_env({**CHALLENGE, "TEAM_ID": "team-from-platform"})
+    assert settings.team == "team-from-platform"
+    assert Settings.from_env(CHALLENGE).team == ""
+
+
+def test_explicit_team_variable_wins_over_team_id() -> None:
+    settings = Settings.from_env(
+        {**CHALLENGE, "RESEARCH_WORKSPACE_TEAM": "explicit-team", "TEAM_ID": "sdk-team"}
+    )
+    assert settings.team == "explicit-team"
