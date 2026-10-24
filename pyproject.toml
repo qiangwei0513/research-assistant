@@ -31,6 +31,23 @@ addopts = "-ra -m 'not live'"
 markers = [
     "live: 需要真实模型网关与网络，默认排除；设置 .env.local 后用 -m live 单独运行",
 ]
+# 默认把任何警告升级为失败，只精确豁免三条已知的第三方问题。
+# 三者都来自 starlette 0.37.2（为对齐基础镜像而锁定）与本地较新的
+# python_multipart / anyio 之间的版本差，不在本项目代码里，
+# 也无法在不放松版本锁的前提下消除：
+#   1-2. starlette 导入期的两条弃用警告，按消息前缀豁免；
+#   3. TestClient 的 portal 拆除时 anyio MemoryObjectStream 在 __del__ 里发的
+#      ResourceWarning。从源头按消息前缀豁免它，警告就不会在 __del__ 中抛出，
+#      也就不会被 pytest 包装成 PytestUnraisableExceptionWarning——
+#      因此 PytestUnraisableExceptionWarning 仍受 "error" 管辖，
+#      我们自己代码里的 unraisable 异常照样会让测试失败。
+# 任何新警告仍会变成失败。
+filterwarnings = [
+    "error",
+    "ignore:Please use `import python_multipart` instead\\.:PendingDeprecationWarning",
+    "ignore:The anyio\\.abc\\.BlockingPortal alias is deprecated:DeprecationWarning",
+    "ignore:Unclosed <MemoryObject:ResourceWarning",
+]
 
 [tool.ruff]
 line-length = 100
