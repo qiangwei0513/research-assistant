@@ -384,3 +384,40 @@ def test_usage_from_response_ignores_non_numeric_values() -> None:
 
 def test_message_to_json() -> None:
     assert Message(role="system", content="c").to_json() == {"role": "system", "content": "c"}
+
+
+def test_slow_trickle_response_cannot_overrun_wall_clock_budget():
+    import contextlib
+    import threading
+    from dataclasses import replace
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    payload = json.dumps(completion_response()).encode()
+
+    class Trickle(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                for index in range(0, len(payload), 30):
+                    self.wfile.write(payload[index : index + 30])
+                    self.wfile.flush()
+                    time.sleep(0.05)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Trickle)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    gateway = HttpGateway(replace(SETTINGS, base_url=f"http://127.0.0.1:{server.server_port}"))
+    try:
+        started = time.monotonic()
+        with pytest.raises(GatewayError, match="Timeout"):
+            gateway._request_and_parse({}, 0.15, "trickle", StubContext())
+        assert time.monotonic() - started < 0.5
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

@@ -1,6 +1,6 @@
 """赛事模型网关客户端。
 
-同步 httpx.Client：由 SDK interceptor 自动抓取 token 与 finish_reason。
+同步入口内运行可取消的异步 HTTP 请求；显式 SDK span 记录 token 与 finish_reason。
 不做无界重试；超时来自 Deadline，不写死常量；凭据不出现在日志或异常消息中。
 """
 
@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+import anyio
 import httpx
 
 from research_assistant.errors import ConfigError, GatewayError
@@ -115,7 +116,7 @@ class HttpGateway:
         gateway: GatewaySettings,
         *,
         log: BoundLogger | None = None,
-        transport: httpx.BaseTransport | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._settings = gateway
         self._log = log or JsonLogger("gateway")
@@ -189,6 +190,14 @@ class HttpGateway:
             raw=outcome.payload,
         )
 
+    async def _post_bounded(self, body: dict[str, Any], timeout: float) -> httpx.Response:
+        # httpx.Timeout 只限制连接/读写空闲时间。慢速持续分片也必须受整段墙钟预算约束。
+        with anyio.fail_after(timeout):
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(timeout), transport=self._transport
+            ) as client:
+                return await client.post(self.endpoint, json=body, headers=self._headers())
+
     def _request_and_parse(
         self,
         body: dict[str, Any],
@@ -198,9 +207,8 @@ class HttpGateway:
     ) -> ParsedResponse:
         started = time.monotonic()
         try:
-            with httpx.Client(timeout=httpx.Timeout(timeout), transport=self._transport) as client:
-                response = client.post(self.endpoint, json=body, headers=self._headers())
-        except httpx.HTTPError as exc:
+            response = anyio.run(self._post_bounded, body, timeout)
+        except (httpx.HTTPError, TimeoutError) as exc:
             raise GatewayError(
                 f"gateway request failed during {stage}: {exc.__class__.__name__}: {exc}",
                 case_id=context.case_id,
