@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
+from research_assistant.contracts.report_text import report_body_characters
 from research_assistant.contracts.task import TaskFunction
 from research_assistant.errors import TaskContractError
 
@@ -131,10 +132,11 @@ def retrieval_result(case_id: str, *, papers: Sequence[Mapping[str, Any]]) -> di
 def _report_result(case_id: str, *, path: str, markdown: str) -> dict[str, Any]:
     if not isinstance(markdown, str):
         raise TaskContractError("markdown must be a string", case_id=case_id)
-    if len(markdown.strip()) < MIN_BODY_CHARACTERS:
+    body_characters = report_body_characters(markdown)
+    if body_characters < MIN_BODY_CHARACTERS:
         raise TaskContractError(
             f"markdown body must be at least {MIN_BODY_CHARACTERS} characters, "
-            f"got {len(markdown.strip())}",
+            f"got {body_characters}",
             case_id=case_id,
         )
     return {

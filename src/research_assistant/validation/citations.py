@@ -189,6 +189,8 @@ def find_instances(body: str) -> tuple[CitationInstance, ...]:
     instances: list[CitationInstance] = []
     for paragraph_index, paragraph in enumerate(paragraphs):
         for match in CITATION_GROUP.finditer(paragraph):
+            if _is_numeric_interval(paragraph, match):
+                continue
             numbers = tuple(
                 int(part) for part in re.split(r"[,，]", match.group(1)) if part.strip()
             )
@@ -207,29 +209,70 @@ def find_instances(body: str) -> tuple[CitationInstance, ...]:
     return tuple(instances)
 
 
-# 保守 token：不含空白、中文句号、分号与方括号的一段以 .pdf 结尾的文本。
-# 只用于在「不属于授权集合」时识别出一个可疑文件名，不用于精确取名。
-_PDF_TOKEN = re.compile(r"([^\s。;；\[\]]+\.pdf)", re.IGNORECASE)
+def _is_numeric_interval(text: str, match: re.Match[str]) -> bool:
+    numbers = [int(n) for n in re.split(r"[,，]", match[1])]
+    if len(numbers) != 2 or match[2] is not None:
+        return False
+    before, after = text[max(0, match.start() - 16) : match.start()], text[match.end() :]
+    if re.search(r"∈\s*$", before):
+        return True
+    return 0 in numbers and (
+        re.search(r"(?:归一化(?:到|至)?|统一|区间|范围)\s*$", before) is not None
+        or re.match(r"\s*(?:区间|空间|分箱|范围)", after) is not None
+    )
 
 
-def _match_allowed_filename(raw: str, allowed: frozenset[str]) -> str | None:
-    """先在授权集合里做精确子串匹配。
-
-    这样含空格、中文、`+` 的真实文件名都能被完整取出；用正则猜边界反而会
-    把作者与标题一起吞进来，或在含空格的文件名处截断。
-    """
-    for filename in allowed:
-        if filename and filename in raw:
-            return filename
-    return None
+_QUOTED_LOCATOR = re.compile(r"""(?<![^\s(:：（])(?:`[^`\n]*`|"[^"\n]*"|'[^'\n]*')""")
+_LOCATOR_END = re.compile(r"(?:$|[\s,，。;；)）\]]|\.(?:\s|$))")
+_PDF_FRAGMENT = re.compile(r"\.pdf\b", re.IGNORECASE)
 
 
 def _extract_filename(raw: str, allowed: frozenset[str] = frozenset()) -> str | None:
-    matched = _match_allowed_filename(raw, allowed)
-    if matched is not None:
-        return matched
-    token = _PDF_TOKEN.search(raw)
-    return token.group(1) if token else None
+    """Resolve one complete locator; never authorize an arbitrary filename substring.
+
+    Free author/title prose cannot prove the start of a space-containing filename.
+    Require delimiters or a label there; the repair hint explains this constraint.
+    Unknown explicit locators are returned intact so membership stays exact.
+    """
+    text = raw.strip()
+    bare = text.rstrip(" .。")
+    if bare in allowed:
+        return bare
+    candidates: list[str] = []
+    outside = list(text)
+    # Scan all quote styles together, left to right. An outer quoted span owns
+    # its contents; an inner backtick cannot authorize a suffix of that name.
+    for match in _QUOTED_LOCATOR.finditer(text):
+        candidate = match[0][1:-1]
+        outside[match.start() : match.end()] = " " * len(match[0])
+        if not _PDF_FRAGMENT.search(candidate):
+            continue
+        if not candidate.lower().endswith(".pdf") or not _LOCATOR_END.match(text[match.end() :]):
+            return None
+        candidates.append(candidate)
+    if candidates:
+        if len(candidates) == 1 and not _PDF_FRAGMENT.search("".join(outside)):
+            return candidates[0]
+        return None
+    labelled = re.search(
+        r"(?:^|[\s（(,，;；])(?:PDF\s*文件名|PDF|文件名)\s*[:：]\s*(.+)$", bare, re.IGNORECASE
+    )
+    if labelled:
+        candidate = labelled[1]
+        if _PDF_FRAGMENT.search(bare[: labelled.start(1)]):
+            return None
+        if candidate in allowed:
+            return candidate
+        if (
+            candidate.lower().endswith(".pdf")
+            and len(_PDF_FRAGMENT.findall(candidate)) == 1
+            and not any(q in candidate for q in "`\"'")
+        ):
+            return candidate
+    # Single bare unknown names can be diagnosed without guessing metadata boundaries.
+    if re.fullmatch(r"[^\s`\"'<>\[\]()（）]+\.pdf", bare, re.IGNORECASE):
+        return bare
+    return None
 
 
 def find_references(
@@ -248,7 +291,7 @@ def find_references(
             ReferenceEntry(
                 number=int(match.group(1)),
                 raw=cleaned,
-                filename=_extract_filename(cleaned, allowed),
+                filename=_extract_filename(match.group(2), allowed),
             )
         )
     return tuple(entries)
@@ -258,20 +301,29 @@ def analyze_citations(markdown: str, allowed_filenames: Iterable[str]) -> Citati
     body, references_section = split_references(markdown)
     paragraphs = split_paragraphs(body)
     instances = find_instances(body)
-    references = find_references(references_section, frozenset(allowed_filenames))
+    allowed = frozenset(allowed_filenames)
+    references = find_references(references_section, allowed)
     analysis = CitationAnalysis(
         body=body,
         references_section=references_section,
         paragraphs=paragraphs,
         instances=instances,
         references=references,
-        allowed_filenames=frozenset(allowed_filenames),
+        allowed_filenames=allowed,
     )
     return _with_issues(analysis)
 
 
 def _with_issues(analysis: CitationAnalysis) -> CitationAnalysis:
     issues: list[CitationIssue] = []
+    for match in CITATION_GROUP.finditer(analysis.body):
+        if _is_numeric_interval(analysis.body, match):
+            issues.append(
+                CitationIssue(
+                    "ambiguous_numeric_brackets",
+                    f"数学区间{match[0]}易与文献引用混淆；请改写为文字区间（如闭区间0至1），不要增添引用编号0。",
+                )
+            )
     if not analysis.instances:
         issues.append(CitationIssue("no_body_citations", "正文没有任何数字引用；引用分将为 0"))
     for number in sorted(analysis.dangling_numbers):
@@ -285,7 +337,11 @@ def _with_issues(analysis: CitationAnalysis) -> CitationAnalysis:
     for entry in analysis.references:
         if entry.filename is None:
             issues.append(
-                CitationIssue("missing_filename", f"参考文献 [{entry.number}] 缺少完整 PDF 文件名")
+                CitationIssue(
+                    "missing_filename",
+                    f"参考文献 [{entry.number}] 无法唯一识别完整 PDF 文件名；"
+                    "请只列一个文件名并用反引号包裹，不得混入第二个 PDF",
+                )
             )
     if analysis.packing_ratio > 0:
         issues.append(
@@ -369,7 +425,15 @@ def build_repair_hint(analysis: CitationAnalysis, *, min_distinct_papers: int) -
             "以下材料不在本题授权范围内，必须删除：" + ", ".join(sorted(analysis.unknown_filenames))
         )
     if kinds.get("missing_filename"):
-        lines.append("每条参考文献都必须给出完整 PDF 文件名。")
+        lines.append(
+            "每条参考文献必须只对应一份材料；完整 PDF 文件名用反引号包裹，"
+            "例如 [1] 作者. 标题. `完整文件名.pdf`，或编号后只写完整文件名。"
+            "不得省略前缀或把多个 PDF 塞进同一编号。"
+        )
+    if kinds.get("ambiguous_numeric_brackets"):
+        lines.append(
+            "数学区间不要使用类似[0,1]的引文括号；请用闭区间0至1等文字形式，保留原数值与边界含义。"
+        )
     cited = len(analysis.cited_filenames)
     if cited < min_distinct_papers:
         lines.append(

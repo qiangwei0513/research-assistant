@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from research_assistant.contracts.report_text import report_body_characters
 from research_assistant.contracts.results import MIN_BODY_CHARACTERS, survey_result
 from research_assistant.contracts.task import Task
 from research_assistant.documents.evidence import (
@@ -31,10 +32,14 @@ from research_assistant.runtime.gateway import Message
 from research_assistant.runtime.modelcall import complete_parsed
 from research_assistant.validation.citations import (
     CitationAnalysis,
-    analyze_citations,
     build_repair_hint,
     issue_summary,
 )
+from research_assistant.validation.grounding import (
+    analyze_report_evidence,
+)
+from research_assistant.validation.report_repair import complete_missing_references, decide_repair
+from research_assistant.validation.source_audit import REPAIR_RESERVE, audit_report
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型检查，避免与 context 循环导入
     from research_assistant.runtime.context import SolveContext
@@ -48,7 +53,7 @@ MIN_DISTINCT_PAPERS = 5
 # 规则要求正文至少 800 字符；这里要求模型写得更长，留出被 strip 与自检后的余量
 TARGET_BODY_CHARACTERS = 1600
 # 上限同样重要：实测 E 类写到 4460 字符耗时 170.9s，而单题上限只有 180s。
-# 正文超过下限即可得分，过长只会把整题推向超时（超时即 0 分）。
+# 保留生成时间余量；字数下限不是内容质量或得分保证。
 MAX_BODY_CHARACTERS = 2400
 
 SYSTEM_PROMPT = (
@@ -58,19 +63,24 @@ SYSTEM_PROMPT = (
     "2. 正文事实与数据必须用数字引用标注：[编号] 或 [编号, p.页码]。"
     "编号对应材料清单里的 [n]。**页码只有在给定原文片段里确实能找到该陈述时才写**，"
     "否则只写 [编号]。\n"
-    "3. 不得编造事实、数据、页码或参考文献。材料不足时如实写明不足，"
+    "3. 论文数值必须在对应原文有依据，不能借用另一篇论文的数字；原文只报告方向时不得补写幅度。"
+    "不得编造事实、数据、页码或参考文献。材料不足时如实写明不足，"
     "不要为了凑满 5 篇而虚构第 5 篇。\n"
+    "保留原文中的关键结果、定量阈值、反例与适用条件，不能只写泛化趋势。"
+    "地区、气候、样本量和局限未在证据中给出时写明材料未说明；"
+    "你自行提出的局限或外推风险必须标为分析判断，不能归作论文已证实结论。"
+    "原文节选没覆盖某信息不等于整篇论文没有该信息。\n"
     "4. 引用要服务于具体陈述：不要在同一个方括号里堆 3 个及以上编号（这会被判为打包引用），"
     "也不要用无意义的重复内容去凑分布。\n"
     "5. 每篇被引用的材料应在**至少两个不同的实质段落**中就其真实贡献被引用；"
     "不要让单篇占绝大多数引用。\n"
     "6. 结尾必须有一行 `## 参考文献`，其下逐条列出**正文实际引用过**的指定论文，"
-    "每条以 [编号] 开头并包含完整 PDF 文件名。\n"
+    "每条以 [编号] 开头，只对应一篇论文，完整 PDF 文件名必须用成对反引号包裹。\n"
     f"7. 正文（不含参考文献）控制在 {TARGET_BODY_CHARACTERS} 至 {MAX_BODY_CHARACTERS} 字符之间，"
     "用中文写作，使用 Markdown 小节标题组织，**每节写要点即可、不要展开成长段落**："
-    "本题有严格的单题时限，超时的代价是整题 0 分，而正文只要超过 800 字符、"
-    "比较维度齐全、引用合规就能得分。\n"
-    "8. 只输出 Markdown 正文本身，不要代码围栏、不要任何前后缀说明。"
+    "优先用篇幅交代有原文依据的具体发现及差异，删去空泛铺垫。字数下限不能代替事实覆盖。\n"
+    "数值范围请用闭区间0至1等文字形式，不要写成与引文冲突的[0,1]。"
+    "8. 只输出完整 Markdown 报告（含末尾参考文献表），不要代码围栏、不要任何前后缀说明。"
 )
 
 
@@ -92,7 +102,7 @@ def build_user_prompt(task: Task, pack: EvidencePack) -> str:
     )
     parts.append(
         "请写出完整 Markdown 综述：正文比较上述维度并用 [编号] 标注引用，"
-        "结尾用 `## 参考文献` 列出实际引用过的论文及完整 PDF 文件名。"
+        "结尾用 `## 参考文献` 列出实际引用过的论文，每条只列一个用反引号包裹的完整 PDF 文件名。"
     )
     return "\n\n".join(parts)
 
@@ -100,9 +110,10 @@ def build_user_prompt(task: Task, pack: EvidencePack) -> str:
 def _parse_markdown(content: str) -> str:
     """剥掉模型可能自行添加的代码围栏，并守住正文长度下限。"""
     stripped = _strip_code_fence(content)
-    if len(stripped.strip()) < MIN_BODY_CHARACTERS:
+    body_characters = report_body_characters(stripped)
+    if body_characters < MIN_BODY_CHARACTERS:
         raise GatewayError(
-            f"survey body was {len(stripped.strip())} characters, below the required "
+            f"survey body was {body_characters} characters, below the required "
             f"{MIN_BODY_CHARACTERS}"
         )
     return stripped
@@ -247,10 +258,29 @@ def solve_survey(task: Task, context: SolveContext) -> Mapping[str, Any]:
             reason=exc.message[:200],
         )
         markdown, response = _generate(pack, STAGE_GENERATE + ".shrunk")
-    analysis = analyze_citations(markdown, allowed)
+    reference_repair = complete_missing_references(markdown, pack)
+    markdown = reference_repair.markdown
+    if reference_repair.added_numbers:
+        context.log.info(
+            "survey.references_completed",
+            case_id=task.case_id,
+            added_numbers=reference_repair.added_numbers,
+        )
+    analysis = analyze_report_evidence(markdown, report.documents, allowed)
     _log_analysis(context, analysis, "generate")
+    source_audit = audit_report(markdown, pack, context, stage="survey.source_audit")
 
     hint = build_repair_hint(analysis, min_distinct_papers=min_papers)
+    hint = replace(
+        hint,
+        lines=hint.lines
+        + tuple(finding.hint() for finding in source_audit.findings)
+        + tuple(
+            issue.detail
+            for issue in analysis.issues
+            if issue.kind == "unverified_numeric_attribution"
+        ),
+    )
     if hint.lines and context.deadline.remaining() > REPAIR_BUDGET_SECONDS:
         # 只做一轮有针对性的修复；多轮自评不等于真实实验，也不该吃掉整题预算
         repair_messages = (
@@ -260,10 +290,10 @@ def solve_survey(task: Task, context: SolveContext) -> Mapping[str, Any]:
             Message(
                 role="user",
                 content=(
-                    "下面的自检发现了会被扣分的具体问题。请在**不改变已有事实与引用编号含义**、"
+                    "下面的自检发现了会被扣分的具体问题。请保留有依据的事实、纠正无据归因，且不改变引用编号含义，"
                     "不新增未授权材料、不编造内容的前提下，重写整篇综述修掉这些问题：\n"
                     + hint.as_prompt_block()
-                    + "\n\n只输出修改后的完整 Markdown 正文，不要代码围栏、不要解释。"
+                    + "\n\n只输出修改后的完整 Markdown 报告，必须保留末尾 ## 参考文献表、全部实际引用的编号及用反引号包裹的完整PDF文件名；不要代码围栏、不要解释。"
                 ),
             ),
         )
@@ -273,16 +303,53 @@ def solve_survey(task: Task, context: SolveContext) -> Mapping[str, Any]:
                 context=replace(
                     context,
                     deadline=replace(
-                        context.deadline, budget_seconds=context.deadline.budget_seconds - 5.0
+                        context.deadline,
+                        budget_seconds=context.deadline.budget_seconds
+                        - (REPAIR_RESERVE if source_audit.complete else 5.0),
                     ),
                 ),
                 stage=STAGE_REPAIR,
                 max_tokens=REPAIR_MAX_TOKENS,
             )
             candidate = _parse_markdown(repaired.content)
-            candidate_analysis = analyze_citations(candidate, allowed)
-            # 只有确实变好才采用；否则保留原稿，避免修复反而破坏正文
-            if len(candidate_analysis.issues) < len(analysis.issues) and candidate.strip():
+            candidate_references = complete_missing_references(candidate, pack)
+            candidate = candidate_references.markdown
+            if candidate_references.added_numbers:
+                context.log.info(
+                    "survey.references_completed",
+                    case_id=task.case_id,
+                    stage="repair_candidate",
+                    added_numbers=candidate_references.added_numbers,
+                )
+            candidate_analysis = analyze_report_evidence(candidate, report.documents, allowed)
+            _log_analysis(context, candidate_analysis, "repair_candidate")
+            candidate_audit = (
+                audit_report(
+                    candidate, pack, context, stage="survey.source_audit_candidate", candidate=True
+                )
+                if source_audit.complete
+                else None
+            )
+            decision = decide_repair(
+                analysis,
+                candidate_analysis,
+                min_sources=min_papers,
+                semantic_before=len(source_audit.findings) if source_audit.complete else 0,
+                semantic_after=len(candidate_audit.findings)
+                if candidate_audit and candidate_audit.complete
+                else 0,
+            )
+            if candidate_audit is not None and not candidate_audit.complete:
+                decision = replace(decision, accepted=False, reason="source_audit_unavailable")
+            context.log.info(
+                "survey.repair_decision",
+                case_id=task.case_id,
+                accepted=decision.accepted,
+                reason=decision.reason,
+                before_priority=decision.before_priority,
+                after_priority=decision.after_priority,
+            )
+            if decision.accepted:
                 markdown, analysis = candidate, candidate_analysis
                 context.log.info("survey.repair_applied", case_id=task.case_id)
             else:

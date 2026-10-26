@@ -15,6 +15,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from research_assistant.documents.excerpts import compress_source, select_page_excerpts
 from research_assistant.documents.model import Document, ParseStatus
 
 EVIDENCE_KINDS = (
@@ -51,6 +52,7 @@ class EvidenceEntry:
     abstract: str | None
     snippets: tuple[EvidenceSnippet, ...]
     status_reason: str | None = None
+    excerpted: bool = False
 
     @property
     def short_label(self) -> str:
@@ -90,6 +92,8 @@ def build_evidence_pack(
     max_chars_per_document: int = DEFAULT_MAX_CHARS_PER_DOCUMENT,
 ) -> EvidencePack:
     """把文档整理成证据包。不可用材料单独记录，不混进可引用集合。"""
+    if max_chars_per_document < 0:
+        raise ValueError("max_chars_per_document must be nonnegative")
     entries: list[EvidenceEntry] = []
     unusable: list[UnusableMaterial] = []
 
@@ -104,21 +108,23 @@ def build_evidence_pack(
             )
             continue
 
-        budget = max_chars_per_document
-        if document.metadata.abstract:
-            budget -= len(document.metadata.abstract)
-        snippets: list[EvidenceSnippet] = []
-        for page in document.pages:
-            if budget <= 0:
-                break
-            text = _compress(page.text)
-            if not text:
-                continue
-            clipped = text[:budget]
-            snippets.append(
-                EvidenceSnippet(page_index=page.index, page_label=page.label, text=clipped)
-            )
-            budget -= len(clipped)
+        original_abstract = compress_source(document.metadata.abstract or "")
+        source_chars = sum(len(compress_source(page.text)) for page in document.pages)
+        abstract_limit = (
+            len(original_abstract)
+            if len(original_abstract) + source_chars <= max_chars_per_document
+            else min(1000, max_chars_per_document // 4)
+        )
+        abstract = original_abstract[:abstract_limit].rstrip()
+        pages = select_page_excerpts(document.pages, max_chars_per_document - len(abstract))
+        snippets = tuple(
+            EvidenceSnippet(page_index=page.index, page_label=page.label, text=page.text)
+            for page in pages
+        )
+        excerpted = (
+            len(abstract) < len(original_abstract)
+            or sum(len(s.text) for s in snippets) < source_chars
+        )
 
         entries.append(
             EvidenceEntry(
@@ -127,8 +133,9 @@ def build_evidence_pack(
                 year=document.metadata.year,
                 authors=document.metadata.authors,
                 keywords=document.metadata.keywords,
-                abstract=document.metadata.abstract,
-                snippets=tuple(snippets),
+                abstract=abstract or None,
+                snippets=snippets,
+                excerpted=excerpted,
             )
         )
 
@@ -150,6 +157,10 @@ def render_evidence_pack(pack: EvidencePack) -> str:
             lines.append(f"- 关键词：{', '.join(entry.keywords)}")
         if entry.abstract:
             lines.append(f"- 摘要：{entry.abstract}")
+        if entry.excerpted:
+            lines.append(
+                "- 证据范围：以下为节选，未见某细节不等于原文没有；不得据此编造原文结论或局限。"
+            )
         for snippet in entry.snippets:
             lines.append(f"- 原文（第 {snippet.citable_page} 页）：{snippet.text}")
         blocks.append("\n".join(lines))

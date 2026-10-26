@@ -17,6 +17,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from research_assistant.contracts.report_text import report_body_characters
 from research_assistant.contracts.results import MIN_BODY_CHARACTERS, idea_result
 from research_assistant.contracts.task import Task
 from research_assistant.documents.evidence import (
@@ -32,7 +33,12 @@ from research_assistant.errors import BudgetExhausted, GatewayError
 from research_assistant.runtime.gateway import Message
 from research_assistant.runtime.modelcall import complete_parsed
 from research_assistant.runtime.persistence import write_text_verified
-from research_assistant.validation.citations import analyze_citations, issue_summary
+from research_assistant.validation.citations import issue_summary
+from research_assistant.validation.grounding import (
+    analyze_report_evidence,
+)
+from research_assistant.validation.report_repair import complete_missing_references, decide_repair
+from research_assistant.validation.source_audit import REPAIR_RESERVE, audit_report
 
 if TYPE_CHECKING:  # pragma: no cover
     from research_assistant.runtime.context import SolveContext
@@ -303,13 +309,18 @@ SYSTEM_PROMPT = (
     + "。不得把未验证的改进效果写成已完成实验。\n"
     "5. 避免模板化套话（如「随着深度学习的发展」「具有重要意义」），"
     "写具体到本题材料的技术内容；重复句不计入篇幅。\n"
-    "6. 不得编造事实、数据、页码或参考文献；结尾用 `## 参考文献` 列出实际引用的指定论文"
-    "及完整 PDF 文件名。\n"
+    "6. 论文实测数值必须在对应原文中有依据，不能从另一篇论文借用数字；原文只报告方向时不得补写幅度。"
+    "方案的目标、样本量、成本和阈值须明确标为预设或待验证，不得伪装成文献实测基准。"
+    "优先用原文的具体结果、反例与适用条件支撑改动；原文未给出的地区、气候、样本量或局限"
+    "必须写明未说明，自己的推断标为待验证分析。原文节选未覆盖不等于整篇论文没有。"
+    "不得编造事实、数据、页码或参考文献；结尾用 `## 参考文献` 列出实际引用的指定论文"
+    "；每条只对应一篇论文，完整 PDF 文件名必须用成对反引号包裹。\n"
     f"7. 正文（不含参考文献与代码）控制在 {TARGET_BODY_CHARACTERS} 至 "
     f"{MAX_BODY_CHARACTERS} 字符之间，中文写作。**每节 {PER_SECTION_CHARACTERS} 字符左右即可，"
     "写要点不要展开成段落**：本题有严格的单题时限，实测写满 4000 字符要耗时 170 秒，"
-    "逼近上限；超时或被迫截断的代价是整题 0 分，而正文只要超过 800 字符且八要点齐全就能得分。\n"
-    "8. 只输出 Markdown 正文本身，不要代码围栏、不要任何前后缀说明。"
+    "逼近上限。优先保留有来源的瓶颈、互补机制、对照实验和证伪条件，字数下限不能代替实质内容。\n"
+    "数值范围请用闭区间0至1等文字形式，不要写成与引文冲突的[0,1]。"
+    "8. 只输出完整 Markdown 报告（含末尾参考文献表），不要代码围栏、不要任何前后缀说明。"
 )
 
 
@@ -333,10 +344,10 @@ def build_user_prompt(task: Task, pack: EvidencePack) -> str:
 def _parse_markdown(content: str) -> str:
     """剥掉代码围栏并守住正文长度下限（至少 800 字符是硬合同）。"""
     stripped = _strip_code_fence(content)
-    if len(stripped.strip()) < MIN_BODY_CHARACTERS:
+    body_characters = report_body_characters(stripped)
+    if body_characters < MIN_BODY_CHARACTERS:
         raise GatewayError(
-            f"idea body was {len(stripped.strip())} characters, below the required "
-            f"{MIN_BODY_CHARACTERS}"
+            f"idea body was {body_characters} characters, below the required {MIN_BODY_CHARACTERS}"
         )
     return stripped
 
@@ -451,12 +462,22 @@ def solve_idea(task: Task, context: SolveContext) -> Mapping[str, Any]:
             reason=exc.message[:200],
         )
         markdown, response = _generate(pack, STAGE_GENERATE + ".shrunk")
+    reference_repair = complete_missing_references(markdown, pack)
+    markdown = reference_repair.markdown
+    if reference_repair.added_numbers:
+        context.log.info(
+            "idea.references_completed",
+            case_id=task.case_id,
+            added_numbers=reference_repair.added_numbers,
+        )
     check = check_idea_report(markdown)
-    citations = analyze_citations(markdown, allowed)
+    citations = analyze_report_evidence(markdown, report.documents, allowed)
     _log_check(context, check, citations, "generate")
+    source_audit = audit_report(markdown, pack, context, stage="idea.source_audit")
 
     problems = list(check.problems)
     problems.extend(issue.detail for issue in citations.issues)
+    problems.extend(finding.hint() for finding in source_audit.findings)
     if problems and context.deadline.remaining() > REPAIR_BUDGET_SECONDS:
         try:
             repaired = context.gateway.complete(
@@ -470,29 +491,62 @@ def solve_idea(task: Task, context: SolveContext) -> Mapping[str, Any]:
                             "自检发现以下会被扣分的具体问题。请在不编造事实、不新增未授权材料、"
                             "不改变已有引用编号含义的前提下重写整篇方案修掉它们：\n"
                             + "\n".join(f"- {p}" for p in problems)
-                            + "\n\n只输出修改后的完整 Markdown 正文，不要代码围栏、不要解释。"
+                            + "\n\n只输出修改后的完整 Markdown 报告，必须保留末尾 ## 参考文献表、全部实际引用的编号及用反引号包裹的完整PDF文件名；不要代码围栏、不要解释。"
                         ),
                     ),
                 ),
                 context=replace(
                     context,
                     deadline=replace(
-                        context.deadline, budget_seconds=context.deadline.budget_seconds - 5.0
+                        context.deadline,
+                        budget_seconds=context.deadline.budget_seconds
+                        - (REPAIR_RESERVE if source_audit.complete else 5.0),
                     ),
                 ),
                 stage=STAGE_REPAIR,
                 max_tokens=MAX_TOKENS,
             )
             candidate = _parse_markdown(repaired.content)
+            candidate_references = complete_missing_references(candidate, pack)
+            candidate = candidate_references.markdown
+            if candidate_references.added_numbers:
+                context.log.info(
+                    "idea.references_completed",
+                    case_id=task.case_id,
+                    stage="repair_candidate",
+                    added_numbers=candidate_references.added_numbers,
+                )
             candidate_check = check_idea_report(candidate)
-            candidate_citations = analyze_citations(candidate, allowed)
-            candidate_problem_count = len(candidate_check.problems) + len(
-                candidate_citations.issues
+            candidate_citations = analyze_report_evidence(candidate, report.documents, allowed)
+            _log_check(context, candidate_check, candidate_citations, "repair_candidate")
+            candidate_audit = (
+                audit_report(
+                    candidate, pack, context, stage="idea.source_audit_candidate", candidate=True
+                )
+                if source_audit.complete
+                else None
             )
-            # 使用与触发修复一致的内容/引文检查，并禁止已有引文质量退化。
-            if candidate_problem_count < len(problems) and len(candidate_citations.issues) <= len(
-                citations.issues
-            ):
+            decision = decide_repair(
+                citations,
+                candidate_citations,
+                content_before=len(check.problems),
+                content_after=len(candidate_check.problems),
+                semantic_before=len(source_audit.findings) if source_audit.complete else 0,
+                semantic_after=len(candidate_audit.findings)
+                if candidate_audit and candidate_audit.complete
+                else 0,
+            )
+            if candidate_audit is not None and not candidate_audit.complete:
+                decision = replace(decision, accepted=False, reason="source_audit_unavailable")
+            context.log.info(
+                "idea.repair_decision",
+                case_id=task.case_id,
+                accepted=decision.accepted,
+                reason=decision.reason,
+                before_priority=decision.before_priority,
+                after_priority=decision.after_priority,
+            )
+            if decision.accepted:
                 markdown, check, citations = candidate, candidate_check, candidate_citations
                 context.log.info("idea.repair_applied", case_id=task.case_id)
             else:

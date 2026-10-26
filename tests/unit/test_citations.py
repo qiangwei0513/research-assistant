@@ -50,11 +50,11 @@ def good_survey() -> str:
 
 ## 参考文献
 
-[1] 张三, 李四. 城市绿地遥感反演研究. {A}
-[2] 王五. 街区植被与城市热岛. {B}
-[3] 赵六. 电池回收与生命周期评价. {C}
-[4] 孙七. 卫星图像语义分割. {D}
-[5] 周八. 第五篇授权材料研究. {E}
+[1] 张三, 李四. 城市绿地遥感反演研究. `{A}`
+[2] 王五. 街区植被与城市热岛. `{B}`
+[3] 赵六. 电池回收与生命周期评价. `{C}`
+[4] 孙七. 卫星图像语义分割. `{D}`
+[5] 周八. 第五篇授权材料研究. `{E}`
 """
 
 
@@ -145,7 +145,7 @@ def test_reference_without_a_pdf_filename_is_detected() -> None:
 
 
 def test_reference_with_bullet_prefix_is_parsed() -> None:
-    entries = find_references(f"- [1] 张三. 标题. {A}\n")
+    entries = find_references(f"- [1] 张三. 标题. `{A}`\n")
     assert entries[0].number == 1
     assert entries[0].filename == A
 
@@ -183,7 +183,7 @@ def test_no_single_paper_dominates() -> None:
 
 
 def test_no_body_citations_is_detected() -> None:
-    markdown = f"# 综述\n\n正文完全没有引用。\n\n## 参考文献\n\n[1] 张三. {A}\n"
+    markdown = f"# 综述\n\n正文完全没有引用。\n\n## 参考文献\n\n[1] 张三. `{A}`\n"
     analysis = analyze_citations(markdown, ALLOWED)
     assert analysis.has_body_citations is False
     kinds = {i.kind for i in analysis.issues}
@@ -193,27 +193,29 @@ def test_no_body_citations_is_detected() -> None:
 
 def test_listing_in_references_alone_is_not_a_body_citation() -> None:
     """仅列在参考文献不等于正文引用。"""
-    markdown = f"# 综述\n\n正文只引用了一篇 [1]。\n\n## 参考文献\n\n[1] a. {A}\n[2] b. {B}\n"
+    markdown = f"# 综述\n\n正文只引用了一篇 [1]。\n\n## 参考文献\n\n[1] a. `{A}`\n[2] b. `{B}`\n"
     analysis = analyze_citations(markdown, ALLOWED)
     assert analysis.cited_numbers == frozenset({1})
     assert analysis.zombie_numbers == frozenset({2})
 
 
 def test_dangling_number_is_detected() -> None:
-    markdown = f"# 综述\n\n正文引用了不存在的编号 [7]，上下文足够长以便通过实质检查。\n\n## 参考文献\n\n[1] a. {A}\n"
+    markdown = f"# 综述\n\n正文引用了不存在的编号 [7]，上下文足够长以便通过实质检查。\n\n## 参考文献\n\n[1] a. `{A}`\n"
     analysis = analyze_citations(markdown, ALLOWED)
     assert analysis.dangling_numbers == frozenset({7})
     assert any(i.kind == "dangling_number" for i in analysis.issues)
 
 
 def test_duplicate_reference_numbers_are_detected() -> None:
-    markdown = f"# 综述\n\n正文引用 [1] 且上下文足够长。\n\n## 参考文献\n\n[1] a. {A}\n[1] b. {B}\n"
+    markdown = (
+        f"# 综述\n\n正文引用 [1] 且上下文足够长。\n\n## 参考文献\n\n[1] a. `{A}`\n[1] b. `{B}`\n"
+    )
     analysis = analyze_citations(markdown, ALLOWED)
     assert analysis.duplicate_reference_numbers == frozenset({1})
 
 
 def test_unknown_material_is_detected() -> None:
-    markdown = "# 综述\n\n正文引用 [1] 且上下文足够长以通过检查。\n\n## 参考文献\n\n[1] a. 编造的不存在论文.pdf\n"
+    markdown = "# 综述\n\n正文引用 [1] 且上下文足够长以通过检查。\n\n## 参考文献\n\n[1] a. `编造的不存在论文.pdf`\n"
     analysis = analyze_citations(markdown, ALLOWED)
     assert analysis.unknown_filenames == frozenset({"编造的不存在论文.pdf"})
     assert analysis.cited_filenames == frozenset()
@@ -223,7 +225,7 @@ def test_cited_filenames_only_counts_authorized_materials() -> None:
     markdown = (
         f"# 综述\n\n第一段引用授权材料 [1] 与未授权材料 [2]，上下文都足够长。\n\n"
         f"第二段再次引用 [1] 以满足跨段落要求。\n\n"
-        f"## 参考文献\n\n[1] a. {A}\n[2] b. 未授权.pdf\n"
+        f"## 参考文献\n\n[1] a. `{A}`\n[2] b. `未授权.pdf`\n"
     )
     analysis = analyze_citations(markdown, ALLOWED)
     assert analysis.cited_filenames == frozenset({A})
@@ -233,7 +235,7 @@ def test_cited_filenames_only_counts_authorized_materials() -> None:
 def test_packing_ratio_counts_groups_of_three_or_more() -> None:
     markdown = (
         "# 综述\n\n这里打包引用 [1, 2, 3]，另有正常的单篇引用 [1] 在同样的段落里。\n\n"
-        f"## 参考文献\n\n[1] a. {A}\n[2] b. {B}\n[3] c. {C}\n"
+        f"## 参考文献\n\n[1] a. `{A}`\n[2] b. `{B}`\n[3] c. `{C}`\n"
     )
     analysis = analyze_citations(markdown, ALLOWED)
     assert analysis.packed_instance_count == 1
@@ -246,7 +248,7 @@ def test_unbalanced_distribution_is_detected() -> None:
     markdown = (
         f"# 综述\n\n第一段同时引用 [1] 与 [2]，上下文足够长以通过实质检查。\n\n"
         f"第二段只再次引用 [1]，因此另一篇的跨段落分布不均衡。\n\n"
-        f"## 参考文献\n\n[1] a. {A}\n[2] b. {B}\n"
+        f"## 参考文献\n\n[1] a. `{A}`\n[2] b. `{B}`\n"
     )
     analysis = analyze_citations(markdown, ALLOWED)
     assert analysis.unbalanced_numbers == frozenset({2})
@@ -257,14 +259,14 @@ def test_dominant_source_is_detected() -> None:
         f"# 综述\n\n第一段大量引用 [1]，上下文足够长 [1]，再来一次 [1]，"
         f"继续引用 [1]，最后一次 [1]。\n\n"
         f"第二段只引用一次 [2]，上下文也足够长以通过实质检查。\n\n"
-        f"## 参考文献\n\n[1] a. {A}\n[2] b. {B}\n"
+        f"## 参考文献\n\n[1] a. `{A}`\n[2] b. `{B}`\n"
     )
     analysis = analyze_citations(markdown, ALLOWED)
     assert analysis.dominant_number == 1
 
 
 def test_thin_context_instances_are_listed() -> None:
-    markdown = f"# 综述\n\n[1]\n\n## 参考文献\n\n[1] a. {A}\n"
+    markdown = f"# 综述\n\n[1]\n\n## 参考文献\n\n[1] a. `{A}`\n"
     analysis = analyze_citations(markdown, ALLOWED)
     assert len(analysis.context_free_instances) == 1
 
@@ -275,7 +277,7 @@ def test_coverage_ratio_is_zero_without_allowed_materials() -> None:
 
 
 def test_page_qualifier_does_not_affect_number_parsing() -> None:
-    markdown = f"# 综述\n\n带页码的引用 [1, p.3] 上下文足够长，另一次 [1, p.9] 也够长。\n\n第二段再引 [1, p.11] 以满足均衡。\n\n## 参考文献\n\n[1] a. {A}\n"
+    markdown = f"# 综述\n\n带页码的引用 [1, p.3] 上下文足够长，另一次 [1, p.9] 也够长。\n\n第二段再引 [1, p.11] 以满足均衡。\n\n## 参考文献\n\n[1] a. `{A}`\n"
     analysis = analyze_citations(markdown, ALLOWED)
     assert analysis.cited_numbers == frozenset({1})
     assert [i.page for i in analysis.instances] == ["3", "9", "11"]
@@ -292,7 +294,7 @@ def test_repair_hint_is_empty_for_a_clean_survey() -> None:
 def test_repair_hint_names_each_problem() -> None:
     markdown = (
         "# 综述\n\n正文引用了 [9]，上下文足够长以通过实质检查。\n\n"
-        f"## 参考文献\n\n[1] a. {A}\n[2] b. 编造.pdf\n"
+        f"## 参考文献\n\n[1] a. `{A}`\n[2] b. `编造.pdf`\n"
     )
     analysis = analyze_citations(markdown, ALLOWED)
     hint = build_repair_hint(analysis, min_distinct_papers=5).as_prompt_block()
@@ -309,7 +311,7 @@ def test_repair_hint_never_demands_fabricating_a_fifth_paper() -> None:
         f"第二段引用编号 [2]，这一段的上下文同样足够长以通过检查。\n\n"
         f"第三段再次引用 [1]，用来说明它在另一处的真实贡献也足够具体。\n\n"
         f"第四段再次引用 [2]，用来说明它在另一处的真实贡献同样具体。\n\n"
-        f"## 参考文献\n\n[1] a. {A}\n[2] b. {B}\n"
+        f"## 参考文献\n\n[1] a. `{A}`\n[2] b. `{B}`\n"
     )
     analysis = analyze_citations(markdown, frozenset({A, B}))
     hint = build_repair_hint(analysis, min_distinct_papers=2).as_prompt_block()
@@ -318,7 +320,7 @@ def test_repair_hint_never_demands_fabricating_a_fifth_paper() -> None:
 
 
 def test_issue_summary_counts_by_kind() -> None:
-    markdown = "# 综述\n\n引用 [9] 与 [8]，上下文都足够长。\n\n## 参考文献\n\n[1] a. x.pdf\n"
+    markdown = "# 综述\n\n引用 [9] 与 [8]，上下文都足够长。\n\n## 参考文献\n\n[1] a. `x.pdf`\n"
     summary = issue_summary(analyze_citations(markdown, ALLOWED))
     assert summary["dangling_number"] == 2
     assert summary["zombie_number"] == 1

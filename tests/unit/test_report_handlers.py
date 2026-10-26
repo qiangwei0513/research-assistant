@@ -18,9 +18,9 @@ from research_assistant.handlers.idea import (
 )
 from research_assistant.handlers.survey import build_user_prompt, solve_survey
 from research_assistant.runtime.context import load_task_context
-from research_assistant.runtime.gateway import FakeGateway
 from research_assistant.runtime.settings import Settings
 from tests.fixtures.papers import write_paper
+from tests.fixtures.report_gateway import ReportGateway as FakeGateway
 
 TEAM = "测试队伍 A+1"
 P1 = "城市绿地遥感_2024.pdf"
@@ -61,12 +61,15 @@ def good_survey_markdown() -> str:
         + cited("指标定义不统一造成的比较障碍", 3)
         + cited("分割精度提升为绿地提取带来的新可能", 4)
         + cited("缺少夜间与三维冠层观测这一共同缺口", 5)
+        + "\n\n比较时必须区分地表温度与实测气温、区级与街区级尺度，不能把不同指标的结果直接合并为统一结论。"
+        "对于缺少统一观测时段或空间分辨率的信息，应明确记录证据缺口，并把后续核验与当前已有证据分开。"
+        "因此技术脉络中的综合判断仍需逐项回查各篇研究的原文，避免把方法上的可能互补写成已经取得的实验效果。"
         + "\n\n## 参考文献\n\n"
-        f"[1] 张三, 李四. 城市绿地遥感反演研究. {P1}\n"
-        f"[2] 王五. 街区植被与城市热岛. {P2}\n"
-        f"[3] 赵六. 电池回收与生命周期评价. {P3}\n"
-        f"[4] 孙七. 卫星图像语义分割. {P4}\n"
-        f"[5] 周八. 第五篇授权材料研究. {P5}\n"
+        f"[1] 张三, 李四. 城市绿地遥感反演研究. `{P1}`\n"
+        f"[2] 王五. 街区植被与城市热岛. `{P2}`\n"
+        f"[3] 赵六. 电池回收与生命周期评价. `{P3}`\n"
+        f"[4] 孙七. 卫星图像语义分割. `{P4}`\n"
+        f"[5] 周八. 第五篇授权材料研究. `{P5}`\n"
     )
 
 
@@ -122,8 +125,8 @@ def good_idea_markdown() -> str:
         "上述模拟观察尚未验证，所提改进尚未执行，全部效果均为待验证的预期，"
         "不得据此认为已经取得实验结论。\n\n"
         "## 参考文献\n\n"
-        f"[1] 张三. 城市绿地遥感. {P1}\n"
-        f"[2] 王五. 街区植被. {P2}\n"
+        f"[1] 张三. 城市绿地遥感. `{P1}`\n"
+        f"[2] 王五. 街区植被. `{P2}`\n"
     )
     return body
 
@@ -235,7 +238,7 @@ def test_survey_writes_the_canonical_expert_file_and_returns_matching_markdown(
     assert len(markdown.strip()) >= MIN_BODY_CHARACTERS
 
 
-def test_survey_does_not_call_the_model_twice_when_the_draft_is_clean(
+def test_clean_survey_has_one_generation_without_report_repair(
     base_env: dict[str, str], five_papers: list[str], papers_root: Path, tmp_workspace: Path
 ) -> None:
     task = survey_task(five_papers)
@@ -247,8 +250,8 @@ def test_survey_does_not_call_the_model_twice_when_the_draft_is_clean(
     }
     context = load_task_context(task, Settings.from_env(env), gateway=fake)
     solve_survey(task, context)
-    assert len(fake.calls) == 1
-    assert fake.calls[0][0] == "survey.generate"
+    assert len(fake.content_calls) == 1
+    assert fake.content_calls[0][0] == "survey.generate"
 
 
 def test_survey_runs_one_repair_round_when_citations_have_problems(
@@ -262,7 +265,7 @@ def test_survey_runs_one_repair_round_when_citations_have_problems(
         + "\n\n"
         + cited("引用了一个参考文献里不存在的编号", 9)
         + "\n\n## 参考文献\n\n"
-        f"[1] 张三. 标题. {P1}\n"
+        f"[1] 张三. 标题. `{P1}`\n"
     )
     task = survey_task(five_papers)
     fake = FakeGateway([broken, good_survey_markdown()])
@@ -273,7 +276,7 @@ def test_survey_runs_one_repair_round_when_citations_have_problems(
     }
     context = load_task_context(task, Settings.from_env(env), gateway=fake)
     result = solve_survey(task, context)
-    assert [stage for stage, _ in fake.calls] == ["survey.generate", "survey.repair"]
+    assert [stage for stage, _ in fake.content_calls] == ["survey.generate", "survey.repair"]
     assert result["markdown"] == good_survey_markdown().strip()
 
 
@@ -290,7 +293,7 @@ def test_survey_keeps_the_original_when_the_repair_is_not_better(
         + "\n\n"
         + cited("引用了一个参考文献里不存在的编号", 9)
         + "\n\n## 参考文献\n\n"
-        f"[1] 张三. 标题. {P1}\n"
+        f"[1] 张三. 标题. `{P1}`\n"
     )
     # 修复稿必须问题**更多**，否则会被采纳：既有悬空编号，又有打包引用，
     # 还有两处没有实质上下文的裸引用
@@ -301,7 +304,7 @@ def test_survey_keeps_the_original_when_the_repair_is_not_better(
         + cited("一次打包引用了三个不存在的编号", 7)
         + "[8, 9, 10]\n\n[11] [12]\n\n"
         + "## 参考文献\n\n"
-        f"[1] 张三. 标题. {P1}\n"
+        f"[1] 张三. 标题. `{P1}`\n"
     )
     context = context_for(base_env, task, [broken, worse], papers_root, tmp_workspace)
     result = solve_survey(task, context)
@@ -381,9 +384,10 @@ def test_survey_with_fewer_than_five_papers_does_not_demand_a_fifth(
         + cited("把这些缺口作为下一步的研究起点", 1)
         + cited("在统一协议下重跑两项研究的原始数据", 2)
         + cited("这样得到的比较结果才具备可解释性", 1)
-        + "\n\n## 参考文献\n\n[1] a. "
+        + cited("综合时应保留测量定义与实验设置的差异并据此限定比较结论", 2)
+        + "\n\n## 参考文献\n\n[1] "
         + P1
-        + "\n[2] b. "
+        + "\n[2] "
         + P2
         + "\n"
     )
@@ -397,7 +401,7 @@ def test_survey_with_fewer_than_five_papers_does_not_demand_a_fifth(
     context = load_task_context(task, Settings.from_env(env), gateway=fake)
     result = solve_survey(task, context)
     # 只有一轮生成，没有因为「不足 5 篇」而反复要求模型补篇
-    assert len(fake.calls) == 1
+    assert len(fake.content_calls) == 1
     assert result["markdown"] == two_paper_md.strip()
 
 
@@ -480,7 +484,7 @@ def test_idea_runs_a_repair_round_when_sections_are_missing(
     }
     context = load_task_context(task, Settings.from_env(env), gateway=fake)
     result = solve_idea(task, context)
-    assert [stage for stage, _ in fake.calls] == ["idea.generate", "idea.repair"]
+    assert [stage for stage, _ in fake.content_calls] == ["idea.generate", "idea.repair"]
     assert result["markdown"] == good_idea_markdown().strip()
 
 
@@ -692,7 +696,10 @@ def test_survey_shrinks_the_evidence_pack_when_the_context_is_too_small(
     result = solve_survey(task, context)
 
     assert budgets == [6000, 3000], budgets
-    assert [stage for stage, _ in fake.calls] == ["survey.generate", "survey.generate.shrunk"]
+    assert [stage for stage, _ in fake.content_calls] == [
+        "survey.generate",
+        "survey.generate.shrunk",
+    ]
     assert result["markdown"] == markdown.strip()
 
 
@@ -721,8 +728,8 @@ def test_idea_shrinks_the_evidence_pack_when_the_context_is_too_small(
     context = load_task_context(task, Settings.from_env(env), gateway=fake)
     result = solve_idea(task, context)
     assert result["case_id"] == "E-01"
-    assert [stage for stage, _ in fake.calls] == ["idea.generate", "idea.generate.shrunk"]
-    assert len(fake.calls[1][1][-1].content) < len(fake.calls[0][1][-1].content)
+    assert [stage for stage, _ in fake.content_calls] == ["idea.generate", "idea.generate.shrunk"]
+    assert len(fake.content_calls[1][1][-1].content) < len(fake.content_calls[0][1][-1].content)
 
 
 def test_survey_does_not_shrink_on_unrelated_gateway_errors(
@@ -741,7 +748,7 @@ def test_survey_does_not_shrink_on_unrelated_gateway_errors(
     context = load_task_context(task, Settings.from_env(env), gateway=fake)
     with pytest.raises(GatewayError):
         solve_survey(task, context)
-    assert len(fake.calls) == 1
+    assert len(fake.content_calls) == 1
 
 
 def test_shrink_budget_never_drops_below_a_usable_floor() -> None:
@@ -786,7 +793,7 @@ def test_optional_repair_preserves_valid_draft_on_failure(
     second = GatewayError("test timeout") if repair == "error" else short
     context = context_for(base_env, request, [draft, second], papers_root, tmp_workspace)
     result = handler(request, context)
-    assert len(context.gateway.calls) == 2
+    assert len(context.gateway.content_calls) == 2
     assert result["markdown"] == draft.strip()
     assert (tmp_workspace / result["path"]).read_text() == draft.strip()
 

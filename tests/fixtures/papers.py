@@ -99,6 +99,8 @@ def write_paper(
     pages: int = 1,
 ) -> Path:
     """写一篇「论文」：首页含标题与摘要，其余页放正文段落。"""
+    if pages < 1:
+        raise ValueError("pages must be positive")
     directory.mkdir(parents=True, exist_ok=True)
     first_page = [title or filename.rsplit(".", 1)[0]]
     if abstract is not None:
@@ -106,10 +108,16 @@ def write_paper(
         first_page.extend(_wrap(abstract))
     first_page.append("1. Introduction")
     first_page.extend(_wrap(body_paragraphs[0] if body_paragraphs else ""))
+    if pages == 1:
+        for paragraph in body_paragraphs[1:]:
+            first_page.extend(_wrap(paragraph))
     all_pages = [first_page]
     for index in range(1, pages):
-        chunk = body_paragraphs[index] if index < len(body_paragraphs) else ""
-        all_pages.append([f"Page {index + 1}", *_wrap(chunk)])
+        paragraphs = (
+            body_paragraphs[index:] if index == pages - 1 else body_paragraphs[index : index + 1]
+        )
+        lines = [line for paragraph in paragraphs for line in _wrap(paragraph)]
+        all_pages.append([f"Page {index + 1}", *lines])
     data = build_pdf(
         pages=all_pages,
         title=title,
