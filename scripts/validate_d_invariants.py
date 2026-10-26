@@ -1,7 +1,7 @@
 """D 类算法不变量校验（验收 D04）。
 
 `validate_d_offline.py` 只证明「生成源码能跑通、输出键名对」；本脚本进一步证明
-**算法本身符合官方 method/protocol**。这直接决定 D 类 40 分里的「指标计算 6 +
+**公开输入输出可独立复核的不变量**（不是完整算法正确性证明）。这直接决定 D 类 40 分里的「指标计算 6 +
 实验效果 10」：管线跑通但算法错，那 16 分照样是 0。
 
 覆盖的不变量（总纲 §6.3–§6.5）：
@@ -39,6 +39,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from research_assistant.reproduction.d02_validation import check_d02 as validate_d02
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MATERIAL_ROOT = REPO_ROOT.parent / "赛题信息" / "research-experiments-20261020-source-v1"
@@ -249,146 +251,8 @@ def check_d02(
     protocol: Mapping[str, Any],
     report: Report,
 ) -> None:
-    grid = protocol.get("grid") or []
-    default_config = protocol.get("default_config") or {}
-    details = result.get("details")
-    if not isinstance(details, Mapping):
-        report.check(False, "D02 details 为对象", f"类型 {type(details).__name__}")
-        return
-
-    search = details.get("search")
-    report.check(isinstance(search, list), "D02 details.search 为数组")
-    if not isinstance(search, list):
-        return
-    report.check(
-        len(search) == len(grid),
-        f"D02 details.search 恰好 {len(grid)} 行（全网格）",
-        f"实际 {len(search)} 行",
-    )
-
-    configs_seen = []
-    missing_group_fields: list[str] = []
-    for row in search:
-        if not isinstance(row, Mapping):
-            missing_group_fields.append("row 不是对象")
-            continue
-        config = row.get("config")
-        if isinstance(config, Mapping):
-            configs_seen.append((config.get("k1"), config.get("b"), config.get("title_weight")))
-        gm = row.get("group_metrics")
-        if not isinstance(gm, Mapping):
-            missing_group_fields.append("缺 group_metrics")
-            continue
-        for key in ("groups", "worst_mrr_at_10", "macro_mrr_at_10", "macro_recall_at_5_percent"):
-            if key not in gm:
-                missing_group_fields.append(f"缺 group_metrics.{key}")
-    report.check(
-        not missing_group_fields,
-        "D02 每行含 config 与 group_metrics 的四个必需字段",
-        f"{len(missing_group_fields)} 处缺失，例如 {sorted(set(missing_group_fields))[:3]}",
-    )
-
-    grid_tuples = {(g.get("k1"), g.get("b"), g.get("title_weight")) for g in grid}
-    report.check(
-        set(configs_seen) == grid_tuples,
-        "D02 搜索覆盖的 config 与 protocol.grid 一一对应",
-        f"多出 {sorted(set(configs_seen) - grid_tuples)[:2]}，"
-        f"缺少 {sorted(grid_tuples - set(configs_seen))[:2]}",
-    )
-    default_tuple = (
-        default_config.get("k1"),
-        default_config.get("b"),
-        default_config.get("title_weight"),
-    )
-    report.check(
-        default_tuple not in grid_tuples,
-        "D02 默认基线配置不在候选网格内",
-        f"默认 {default_tuple} 出现在网格中",
-    )
-
-    selected = details.get("selected")
-    report.check(isinstance(selected, Mapping), "D02 details.selected 为对象")
-    if isinstance(selected, Mapping) and search:
-
-        def key_of(row: Mapping[str, Any]) -> tuple[float, float, float, float, float]:
-            gm = row.get("group_metrics") or {}
-            cfg = row.get("config") or {}
-
-            def r12(value: Any) -> float:
-                try:
-                    return round(float(value), ROUND_DIGITS)
-                except (TypeError, ValueError):
-                    return float("-inf")
-
-            # 最大化最差组 MRR，再组等权宏 MRR，再组等权宏 Recall@5；
-            # 仍并列按 title_weight,k1,b 升序 → 前三项取负、后三项保持升序
-            return (
-                -r12(gm.get("worst_mrr_at_10")),
-                -r12(gm.get("macro_mrr_at_10")),
-                -r12(gm.get("macro_recall_at_5_percent")),
-                float(cfg.get("title_weight", 0.0)),
-                float(cfg.get("k1", 0.0)),
-            )
-
-        rows = [r for r in search if isinstance(r, Mapping)]
-        expected = min(rows, key=key_of)
-        expected_config = expected.get("config") or {}
-        actual = {k: selected.get(k) for k in ("k1", "b", "title_weight")}
-        want = {k: expected_config.get(k) for k in ("k1", "b", "title_weight")}
-        report.check(
-            all(
-                isinstance(a, (int, float))
-                and isinstance(w, (int, float))
-                and math.isclose(float(a), float(w), rel_tol=1e-12)
-                for a, w in zip((actual[k] for k in want), (want[k] for k in want), strict=True)
-            ),
-            "D02 selected 等于按「最差组MRR→宏MRR→宏Recall@5（各取12位）→title_weight,k1,b升序」重算的结果",
-            f"期望 {want}，实际 {actual}",
-        )
-
-    for name in ("baseline", "candidate"):
-        rankings = result.get(name)
-        if rankings is None:
-            report.check(name == "candidate", f"D02 {name} 存在", "为 null")
-            continue
-        if not isinstance(rankings, Mapping):
-            report.check(False, f"D02 {name} 为 query_id 字典", f"类型 {type(rankings).__name__}")
-            continue
-        doc_ids = {str(d["id"]) for d in data.get("documents", [])}
-        bad_order: list[str] = []
-        bad_coverage: list[str] = []
-        for query_id, rows in rankings.items():
-            if not isinstance(rows, list):
-                bad_order.append(f"{query_id} 不是数组")
-                continue
-            scores = []
-            ids = []
-            for entry in rows:
-                if isinstance(entry, Mapping):
-                    scores.append(entry.get("score"))
-                    ids.append(str(entry.get("id")))
-                else:
-                    ids.append(str(entry))
-            if set(ids) != doc_ids:
-                bad_coverage.append(query_id)
-            numeric = [s for s in scores if isinstance(s, (int, float))]
-            if len(numeric) == len(scores) and scores:
-                expected_order = sorted(
-                    range(len(rows)),
-                    key=lambda i: (-float(scores[i]), ids[i]),
-                )
-                if expected_order != list(range(len(rows))):
-                    bad_order.append(query_id)
-        report.check(
-            not bad_coverage,
-            f"D02 {name} 排名包含全部文档",
-            f"{len(bad_coverage)} 个查询覆盖不全，例如 {bad_coverage[:3]}",
-        )
-        report.check(
-            not bad_order,
-            f"D02 {name} 排名按 (-score,id) 稳定排序",
-            f"{len(bad_order)} 个查询顺序不符，例如 {bad_order[:3]}",
-        )
+    problems = validate_d02({"phase": "run", "data": data, "protocol": protocol}, result)
+    report.check(not problems, "D02 查询覆盖、开发指标独立重算与完整选参规则", "; ".join(problems))
 
 
 # ---------------------------------------------------------------- D-05
@@ -584,26 +448,13 @@ def main() -> int:
                 continue
             if not isinstance(result, Mapping):
                 report.check(False, "返回值为对象", f"类型 {type(result).__name__}")
-            elif payload.get("phase") == "rank":
-                # 官方规定：rank 阶段只用 data.selected 返回 {candidate: rankings}，
-                # 不重新选参，因此没有 baseline 也没有 details
+            elif case_id == "D-02":
+                problems = validate_d02(payload, result)
                 report.check(
-                    set(result) == {"candidate"},
-                    "D02 rank 阶段只返回 candidate",
-                    f"实际键 {sorted(result)}",
+                    not problems,
+                    "D02 查询覆盖、开发指标独立重算与完整选参规则",
+                    "; ".join(problems),
                 )
-                rankings = result.get("candidate")
-                doc_ids = {str(d["id"]) for d in (payload.get("data") or {}).get("documents", [])}
-                if isinstance(rankings, Mapping):
-                    bad = [
-                        q
-                        for q, rows in rankings.items()
-                        if not isinstance(rows, list)
-                        or {str(r.get("id")) for r in rows if isinstance(r, Mapping)} != doc_ids
-                    ]
-                    report.check(not bad, "D02 rank 阶段每个查询覆盖全部文档", f"{bad[:3]}")
-                else:
-                    report.check(False, "D02 rank 阶段 candidate 为 query_id 字典")
             else:
                 CHECKS[case_id](
                     result, payload.get("data") or {}, payload.get("protocol") or {}, report

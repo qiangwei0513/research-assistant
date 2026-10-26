@@ -33,6 +33,7 @@ from research_assistant.reproduction.client import (
     ExperimentClient,
     ExperimentOutcome,
     SubprocessExperimentClient,
+    archive_previous_result,
 )
 from research_assistant.reproduction.materials import (
     GENERATION_SYSTEM_PROMPT,
@@ -323,6 +324,7 @@ def build_experiment_client(context: SolveContext) -> ExperimentClient:
 
 
 def solve_reproduction(task: Task, context: SolveContext) -> Mapping[str, Any] | PersistedResult:
+    archive_previous_result(context.workspace.result_json(task.case_id), task.case_id)
     experiment_root = Path(os.environ.get(EXPERIMENT_ROOT_ENV, "/data/experiments"))
     materials = load_case_materials(task.case_id, experiment_root)
     context.log.info(

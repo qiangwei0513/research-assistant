@@ -117,6 +117,19 @@ def build_generation_prompt(task_input: str, materials: CaseMaterials) -> str:
             "# sample 输入形状（注意：这只是 {case_id,phase,data}，不是完整 worker 请求）\n"
             + json.dumps(materials.sample, ensure_ascii=False)[:4000]
         )
+    if materials.case_id == "D-02":
+        parts.append(
+            "# D-02 返回结构复核（仅解释上方协议，不是算法实现）\n"
+            'run 返回 {"baseline": {"查询ID": [{"id": "文档ID", "score": 数值}]}, '
+            '"candidate": {"查询ID": [{"id": "文档ID", "score": 数值}]}, '
+            '"details": {"selected": 配置, "search": 全网格开发记录}}。\n'
+            "baseline/candidate 直接以 test_queries 中实际查询 ID 为键；"
+            "禁止额外套 dev 或 test 层。开发排名只在 details.search 各行的 rankings 中。\n"
+            'rank 只返回 {"candidate": {"查询ID": [{"id": "文档ID", "score": 数值}]}}，'
+            "使用 data.selected，不能重新调参。两阶段均不返回 case_id/phase 或最终指标。\n"
+            "逐项检查所有必需查询、每个查询的全部文档、每行开发指标和组指标；"
+            "普通查询均值与组等权宏均值须分别计算。并列选参最后还要比较 b。"
+        )
     parts.append(
         "请只输出一个 ```python 代码围栏，内含完整的、可在 Python 3.9 标准库下运行的实现，"
         "顶层定义 run_experiment(request)。"

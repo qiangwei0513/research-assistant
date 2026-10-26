@@ -191,8 +191,9 @@ def test_d02_run_requires_the_full_grid() -> None:
 
 
 def test_d02_run_accepts_a_complete_grid() -> None:
-    payload = {"case_id": "D-02", "phase": "run", "data": {}, "protocol": {"grid": grid(27)}}
-    result = {"baseline": {}, "candidate": {}, "details": {"search": [d02_row()] * 27}}
+    from tests.unit.test_d02_validation import example
+
+    payload, result = example()
     assert check_invariants("D-02", payload, result) == []
 
 

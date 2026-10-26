@@ -16,13 +16,22 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import signal
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
+from research_assistant.reproduction.d02_probes import build_rank_probes
+from research_assistant.reproduction.d02_validation import (
+    RankCheck,
+    check_rank_properties,
+    ranking_orders,
+)
 from research_assistant.reproduction.invariants import check_invariants
 from research_assistant.reproduction.materials import CaseMaterials
 from research_assistant.runtime.logging import BoundLogger
@@ -73,6 +82,8 @@ class SelfTestCase:
     name: str
     payload: Mapping[str, object]
     origin: str
+    rank_checks: Mapping[str, RankCheck] | None = None
+    replay_d02: bool = False
 
 
 @dataclass(frozen=True)
@@ -131,10 +142,64 @@ def build_self_test_cases(
 ) -> tuple[SelfTestCase, ...]:
     """优先用官方公开样例请求（含边界用例）；没有就用 sample.json 合成一个。"""
     cases = _public_requests(experiment_root, materials.case_id)
-    if cases:
-        return tuple(cases)
-    synthesised = _synthesise_from_sample(materials)
-    return (synthesised,) if synthesised is not None else ()
+    if not cases:
+        synthesised = _synthesise_from_sample(materials)
+        cases = [synthesised] if synthesised is not None else []
+    if (
+        materials.case_id == "D-02"
+        and materials.protocol is not None
+        and materials.protocol.get("version") == "layered-d-v3"
+    ):
+        cases = [replace(case, replay_d02=case.payload.get("phase") == "run") for case in cases]
+        cases.extend(
+            SelfTestCase(p.name, p.payload, "metamorphic:layered-d-v3", rank_checks=p.checks)
+            for p in build_rank_probes(materials.protocol)
+        )
+    return tuple(cases)
+
+
+def _d02_replays(case: SelfTestCase, result: Mapping[str, object]) -> list[SelfTestCase]:
+    """Replay verified run output using its default/selected config; never retune locally."""
+    payload = case.payload
+    data = payload["data"]
+    protocol = payload["protocol"]
+    configs = [("baseline", protocol["default_config"])]
+    if result.get("candidate") is not None:
+        configs.append(("candidate", result["details"]["selected"]))
+    queries = data.get("test_queries", [])
+    doc_ids = {str(doc["id"]) for doc in data["documents"]}
+    replays = []
+    for label, config in configs:
+        orders = ranking_orders(result[label], queries, doc_ids, label)
+        rank_payload = {**payload, "phase": "rank", "data": {**data, "selected": dict(config)}}
+        replays.append(
+            SelfTestCase(
+                f"{case.name}-replay-{label}",
+                rank_payload,
+                "replay:run-rank",
+                rank_checks={qid: RankCheck(order=tuple(ids)) for qid, ids in orders.items()},
+            )
+        )
+    return replays
+
+
+def _run_process(command: list[str], *, timeout: float, cwd: str) -> subprocess.CompletedProcess:
+    """独立进程组；结束时连同派生任务回收，避免超时后仍写文件或占 CPU。"""
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
 
 
 def run_self_test(
@@ -169,7 +234,8 @@ def run_self_test(
     first_error: str | None = None
     keys: tuple[str, ...] = ()
 
-    for case in cases:
+    pending = list(cases)
+    for case in pending:
         remaining = timeout - (time.monotonic() - started)
         if remaining <= 0:
             first_error = first_error or "自测整批预算耗尽"
@@ -197,14 +263,7 @@ def run_self_test(
             str(result_file),
         ]
         try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=remaining,
-                cwd=str(work_dir),
-                check=False,
-            )
+            completed = _run_process(command, timeout=remaining, cwd=str(work_dir))
         except subprocess.TimeoutExpired:
             first_error = first_error or f"{case.name}: 自测整批超时（>{timeout:.2f}s）"
             break
@@ -236,15 +295,19 @@ def run_self_test(
         # 实测发现模型生成过「并列类别未取字典序最小」与「任务重复进入 trace/dropped」
         # 这类错误，两者都能通过来源准入与结构检查，只有不变量能拦住。
         violations = check_invariants(str(case.payload.get("case_id", "")), case.payload, parsed)
+        if not violations and case.rank_checks:
+            violations = check_rank_properties(case.payload, parsed, case.rank_checks)
         if violations:
             first_error = first_error or f"{case.name}: " + "；".join(violations[:2])
             continue
+        if case.replay_d02 and case.payload.get("phase") == "run":
+            pending.extend(_d02_replays(case, parsed))
         passed += 1
 
     duration = time.monotonic() - started
     result = SelfTestResult(
-        ok=first_error is None and passed == len(cases),
-        case_count=len(cases),
+        ok=first_error is None and passed == len(pending),
+        case_count=len(pending),
         passed=passed,
         error=first_error,
         output_keys=keys,

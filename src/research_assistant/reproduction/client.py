@@ -25,6 +25,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 from research_assistant.runtime.logging import BoundLogger
 
@@ -67,6 +68,14 @@ class ExperimentClient(Protocol):
     ) -> ExperimentOutcome: ...
 
 
+def archive_previous_result(result_path: Path, case_id: str) -> None:
+    """保护上一轮原始答卷；当前任务可能在生成/材料阶段就失败。"""
+    if result_path.exists():
+        history = result_path.parent / "work" / case_id / "previous-results"
+        history.mkdir(parents=True, exist_ok=True)
+        result_path.replace(history / f"{uuid4().hex}.json")
+
+
 class SubprocessExperimentClient:
     """以 argv 列表方式调用平台 helper。绝不经 shell，绝不拼接命令字符串。"""
 
@@ -99,6 +108,9 @@ class SubprocessExperimentClient:
             "--implementation",
             str(Path(implementation_path).resolve()),
         ]
+        result_path = self._expected_result_file(case_id)
+        # 旧答卷保留作诊断，但必须先移出正式输出路径；本次 helper 失败时不能冒认旧结果。
+        archive_previous_result(result_path, case_id)
         bounded = max(1.0, min(timeout, HARD_TIMEOUT_CEILING_SECONDS))
         timed_out = False
         try:
@@ -118,7 +130,6 @@ class SubprocessExperimentClient:
             stderr = (exc.stderr if isinstance(exc.stderr, str) else "") + "\n[timeout]"
 
         # 先把 helper 已落盘的产物读出来：即使 stdout 解析失败也不得丢失真实结果
-        result_path = self._expected_result_file(case_id)
         result_bytes: bytes | None = None
         if result_path.is_file():
             try:

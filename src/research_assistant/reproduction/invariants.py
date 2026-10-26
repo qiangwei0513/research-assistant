@@ -23,6 +23,8 @@ import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 
+from research_assistant.reproduction.d02_validation import check_d02
+
 _TOKEN = re.compile(r"[a-z0-9]+")
 
 
@@ -36,7 +38,7 @@ def check_invariants(
     if case_id == "D-01":
         return _check_d01(data, result)
     if case_id == "D-02":
-        return _check_d02(payload, result)
+        return check_d02(payload, result)
     if case_id == "D-05":
         return _check_d05(data, result)
     return []
@@ -138,35 +140,6 @@ def _rebuild_d01(
         best = max(scores)
         out.append(next(classes[i] for i, score in enumerate(scores) if score == best))
     return out
-
-
-def _check_d02(payload: Mapping[str, object], result: Mapping[str, object]) -> list[str]:
-    problems: list[str] = []
-    protocol = payload.get("protocol")
-    details = result.get("details")
-    if payload.get("phase") == "rank":
-        if set(result) != {"candidate"}:
-            problems.append(
-                f"rank 阶段只应返回 {{candidate: rankings}}，不得重新选参；实际键 {sorted(result)}"
-            )
-        return problems
-    if not isinstance(details, Mapping):
-        return problems
-    search = details.get("search")
-    if isinstance(protocol, Mapping) and isinstance(search, list):
-        grid = protocol.get("grid")
-        if isinstance(grid, list) and len(search) != len(grid):
-            problems.append(
-                f"details.search 必须包含全部 {len(grid)} 组候选，实际 {len(search)} 行"
-            )
-    for row in search if isinstance(search, list) else []:
-        if not isinstance(row, Mapping) or not isinstance(row.get("group_metrics"), Mapping):
-            problems.append(
-                "details.search 每行必须含 group_metrics（groups、worst_mrr_at_10、"
-                "macro_mrr_at_10、macro_recall_at_5_percent）"
-            )
-            break
-    return problems
 
 
 def _check_setup_consistency(

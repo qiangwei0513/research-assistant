@@ -163,6 +163,8 @@ def summarise(stdout: str) -> dict[str, object]:
 
 
 def main() -> int:
+    from research_assistant.reproduction.invariants import check_invariants
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", default="D-01")
     parser.add_argument("--budget", type=float, default=170.0)
@@ -225,14 +227,23 @@ def main() -> int:
             continue
         elapsed = time.monotonic() - started
         info = summarise(stdout)
-        ok = code == 0 and not info.get("unparsable") and info.get("keys")
+        ok = code == 0 and not info.get("unparsable") and bool(info.get("keys"))
+        violations = []
+        if ok:
+            try:
+                algorithm_result = json.loads(stdout)
+                payload = json.loads(request.read_text(encoding="utf-8"))["payload"]
+                violations = check_invariants(case_id, payload, algorithm_result)
+            except (ValueError, TypeError, KeyError):
+                violations = ["worker stdout 不符合完整算法输出 JSON"]
+            ok = not violations
         print(
             f"[{'OK ' if ok else 'FAIL'}] {request.name}  {elapsed:.1f}s  rc={code}  "
             f"keys={info.get('keys')}"
         )
         if not ok:
             failures += 1
-            tail = (stderr or stdout).strip().splitlines()[-6:]
+            tail = violations or (stderr or stdout).strip().splitlines()[-6:]
             for line in tail:
                 print(f"        | {line}")
 

@@ -399,9 +399,8 @@ def test_successful_run_preserves_the_helper_written_file(
     helper_bytes = (json.dumps(submission(), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     result_path = tmp_workspace / "data" / TEAM / "D-01.json"
     result_path.parent.mkdir(parents=True, exist_ok=True)
-    result_path.write_bytes(helper_bytes)
 
-    install_fake_client(
+    fake = install_fake_client(
         monkeypatch,
         [
             ExperimentOutcome(
@@ -414,6 +413,14 @@ def test_successful_run_preserves_the_helper_written_file(
             )
         ],
     )
+    original_run = fake.run
+
+    def write_current_result(*args, **kwargs):
+        # 本次 helper 执行时才生成答卷，不能把任务开始前的旧文件假装成新结果。
+        result_path.write_bytes(helper_bytes)
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(fake, "run", write_current_result)
     task = reproduction_task()
     context = context_for(
         base_env, task, [gateway_response(VALID_SOURCE)], papers_root, tmp_workspace
@@ -1047,3 +1054,22 @@ def test_helper_failure_does_not_reuse_historical_result(tmp_path, old_status):
     assert not outcome.produced_result_file
     backups = list((result_path.parent / "work" / "D-01" / "previous-results").glob("*.json"))
     assert len(backups) == 1 and backups[0].read_bytes() == original
+
+
+def test_failure_before_helper_preserves_historical_result(
+    base_env, papers_root, tmp_workspace, mounted_materials
+):
+    from research_assistant.errors import GatewayError
+    from research_assistant.solve import persist_and_verify
+
+    task = reproduction_task()
+    context = context_for(base_env, task, [GatewayError("timeout")], papers_root, tmp_workspace)
+    path = context.workspace.result_json(task.case_id)
+    old = json.dumps(submission()).encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(old)
+    result = solve_reproduction(task, context)
+    persist_and_verify(result, context)
+    assert json.loads(path.read_bytes())["status"] == "failed"
+    backups = list((context.work_dir / "previous-results").glob("*.json"))
+    assert any(backup.read_bytes() == old for backup in backups)
