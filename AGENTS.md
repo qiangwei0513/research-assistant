@@ -6,7 +6,7 @@ Read [开发规范与Agent接力](docs/开发规范与Agent接力.md) and [开�
 
 ## Project Structure
 
-`research-assistant/` is the Git repository. Application code, tests, `pyproject.toml` and a delivery `Dockerfile` are implemented (`src/research_assistant/`, `tests/`, `scripts/`). P1–P6 are locally verified; **R03 platform integration has not been performed**. Official materials are in sibling `../赛题信息/`; the base image is `../agenthack-base-1.1.1.tar`. Preserve both. Dated public-source snapshots and hashes live in `docs/references/2026-10-23/`. The approved P1 design and its task-by-task plan live in `docs/superpowers/specs/` and `docs/superpowers/plans/`.
+`research-assistant/` is the Git repository. Application code, tests, `pyproject.toml` and a delivery `Dockerfile` are implemented (`src/research_assistant/`, `tests/`, `scripts/`). P1–P6 are locally verified; **R03 has platform evidence for the previous image (46.9/100); the current fixes still need platform reevaluation**. Official materials are in sibling `../赛题信息/`; the base image is `../agenthack-base-1.1.1.tar`. Preserve both. Dated public-source snapshots and hashes live in `docs/references/2026-10-23/`. The approved P1 design and its task-by-task plan live in `docs/superpowers/specs/` and `docs/superpowers/plans/`.
 
 ## Requirements and Version Control
 
@@ -62,3 +62,26 @@ Never serialize `Settings` or `GatewaySettings` with `dataclasses.asdict()` / `f
 ## Commits and Handoffs
 
 The initial commit uses a `feat:` prefix. Prefer concise subjects such as `docs: clarify dispatch validation`. PRs should identify requirements, affected files, verification evidence, and remaining limitations. Before handing off, inspect existing changes and update the progress record. Never overwrite another contributor’s work, official materials, or valid experiment results with placeholders.
+
+## 2026-10-24 Platform Feedback and Regression Rules
+
+Read `docs/references/2026-10-24-platform-feedback/README.md` before interpreting scores. The old image passed runtime checks; B-01/02/03 scored zero with no model calls, C-01 was invalid, E-02 failed output validation, D-02 scored 10/40. Hidden grader details are unavailable.
+
+For B only, the official material descriptor `本地论文文件夹内的 PDF` authorizes enumerating the configured paper library. Explicit subdirectories may be expanded within that root. Never treat an absent named PDF, empty materials, or unknown prose as permission to read the whole library; C/E remain explicitly scoped.
+
+C/E repaired drafts must pass the same 800-character contract as initial drafts. Keep the valid draft on repair failure. Idea repair selection counts both content and citation defects; require substantive bottleneck reflection without inventing observations.
+
+Bounded document extraction runs in a killable child process. D generation receives a deadline excluding the 55+12+5-second reserve, and self-test timeout is shared by the whole batch. Preserve previous helper outputs under `work/<case>/previous-results` before a new invocation; do not reuse them as new experimental evidence.
+
+
+D-02 self-tests now independently verify query/document coverage, public development metrics, full grid coverage and the six-part selection key (including b). Return diagnostics rather than trusting self-reported metrics. Generation prompts distinguish raw query rankings from the final Reproduction response. Current archive verification on 2026-10-25 passed 892 tests; see the handoff record for the exact digest and pending platform reevaluation. BM25 metamorphic checks and run/rank replay are implemented as described below.
+
+B retrieval keeps every usable authorized document as a semantic candidate, using lexical scores only for ordering. Pack by actual JSON length (24000 characters / at most 12 papers per batch). Context overflow splits batches or compacts a single evidence record without changing filenames. Preserve successful selections on later failures; log exact unreviewed filenames even before an all-failed error. Per-batch authorization is stricter than library membership. Global ordering can only permute verified selections. Latest image evidence includes all 30 synthetic papers screened in 30.19s; this is not platform score evidence.
+
+For current layered-d-v3 D-02, self-tests include five hand-derived rank probes and default/selected run-to-rank replays. Validate score ratios and ranking consistency without embedding BM25. Keep every derived case within the same 12-second batch budget. Latest fresh source passed all 12 cases in a Python3.9 isolated container; see the handoff for image digest. Protocol.case_id identity cross-check is a deferred abnormal-material improvement; current official packets match.
+
+C/E body validation excludes the bibliography and is shared by parsers and output builders. Numeric attribution diagnostics use the actually cited source; they are advisory presence checks, not semantic proof. Keep citation and numeric non-regression gates separate in repair selection. The earlier report-grounding image had a C01 dangling citation. The current reference-repair image passes C01 citation checks; The latest identity image has two residual E02 warnings (distribution and thin context). See the handoff record for exact evidence.
+
+C/E now conservatively complete missing references only from uniquely delimited canonical anchors; ambiguous numbering, unknown/multiple filenames and fenced reports keep the original text for model repair. Initial and candidate drafts share normalization. Repair decisions log candidate issue types and reasons, prioritize legality, and preserve numeric/content/required-coverage guarantees. Global citation identity now accepts only complete unique locators, rejecting unknown prefixes, malformed quoted suffixes and multiple PDFs per entry. Filename-only entries, explicit PDF/文件名 labels and paired quotes preserve exact names, including spaces and embedded .pdf text. Generation/repair guidance requests backticks; undelimited author/title prose is conservatively unresolved. Late-page evidence and abstract budgets now use bounded contiguous excerpts; preserve original page identities, reserve spatial coverage, and mark excerpted sources. Short complete sources that fit remain intact. Nonnumeric factual grounding remains incomplete; current numeric checks are not entailment proof.
+
+Latest 2026-10-26 image validation: C01 passes the existing citation/numeric checks on an eight-page synthetic source and cites its late results/limitations. E02 returns HTTP200 with matching files, but the image harness fails because [0,1] mathematical intervals are read as citation0; manual review also finds vegetation-fraction/NDVI-threshold confusion. Do not call this a clean E validation. Next work: disambiguate numerical notation and strengthen source-specific conceptual fidelity. The former C01 40-percent omission claim was withdrawn: the old fixture generator had silently dropped that configured paragraph; it now preserves all supplied paragraphs. See handoff for evidence/digest.

@@ -2,12 +2,12 @@
 
 > 文档版本：0.1 · 核对日期：2026-10-23（Asia/Shanghai）  
 > 目标：为赛题一科研助手建立可追溯的需求、设计、开发顺序、验收标准和交接规则。  
-> 当前阶段：需求与设计文档完成；业务代码、容器服务和正式评测尚未实现或验证。  
+> 当前阶段：P1–P6 已实现；旧镜像已取得平台自动分 46.9/100（用户截图），B/C/E材料范围、报告容错和预算漏洞已修复；D-02开发指标/语义性质/排名重放及B全候选筛选已实现。当前892项本地测试通过，C/E跨页取证和摘要预算已修复。新镜像C01在8页自建材料验收中正确引用后页结果/局限；E02返回落盘成功，但验收遇到数学区间被识别为引用0、覆盖率被混作NDVI阈值，仍需修复。新镜像成绩待平台复测。历史阶段描述不代表当前状态。
 > 标记约定：**【要求】**来自官方材料；**【设计】**是本项目建议，尚待进入实现阶段时确认；**【待确认】**表示现有证据不足，不得自行当作平台保证。
 
 ## 1. 使用方法与交付目标
 
-后续 Agent 先读根目录 [AGENTS.md](../AGENTS.md)，再读本文和 [开发进度与接力记录](开发进度与接力记录.md)，最后读取当前任务对应的官方原文。每次开发只推进一个可验收阶段，更新交接记录后结束；不能把“文档里计划存在”当成“代码已实现”。
+后续 Agent 先读根目录 [AGENTS.md](../AGENTS.md)，再读本文和 [开发进度与接力记录](开发进度与接力记录.md)，最后读取当前任务对应的官方原文。按用户授权连续推进可验收阶段，每轮代码变更同时更新交接记录；不能把“文档里计划存在”当成“代码已实现”。
 
 【要求】最终交付一个科研助手 Agent 镜像，支持 Chat、Literature_Retrieval、Survey、Reproduction、Idea 五类任务，读取当前题授权的论文与实验材料，生成严格 JSON、实际 Markdown 和图表，并可由平台核验。论文事实、题目模拟观察、模型提出的假设、本轮实测结果必须明确区分。[S1][S3]
 
@@ -473,7 +473,7 @@ shasum -a 256 ../agenthack-base-1.1.1.tar
 
 ### 13.2 开发期公开 D 样例试跑
 
-前置条件：Docker 可用，已有 `python:3.9-slim` 的 Linux/AMD64 镜像，已有单独保存的 `work/D-05/implementation.py`，文件及父目录允许容器非 root 读取。这个 work 路径是开发期示例；当前仓库尚无实现。
+前置条件：Docker 可用，已有 `python:3.9-slim` 的 Linux/AMD64 镜像，已有单独保存的 `work/D-05/implementation.py`，文件及父目录允许容器非 root 读取。这个 work 路径是开发期示例；项目实现位于 `src/research_assistant/`，生成源码始终不进入仓库。
 
 ```sh
 cd /Users/luananwei/科研助手/research-assistant
@@ -494,10 +494,10 @@ docker run --rm -i --pull=never --platform linux/amd64 \
 
 这是官方 PowerShell 方案的 zsh 等价写法，本轮未实际运行。预期 stdout 只有内部 JSON；退出 0 仍须检查方法/不变量。切换 case 与完整请求路径覆盖其他样例。包内空 implementation 会按设计报 `NotImplementedError`。本地个人模型回复只能验证提取与算法，不能作为正式来源凭证。
 
-### 13.3 尚不存在的项目命令
+### 13.3 已实现的项目命令与历史验证
 
 【已实现·2026-10-24】项目命令已齐备，全部有实测结果（见接力记录的验证表）：
-`uv sync`、`uv run pytest`（629 passed）、`uv run pytest -m live`（真实网关）、
+`uv sync`、`uv run pytest`（历史轮次 629 passed；当前结果见接力记录）、`uv run pytest -m live`（真实网关）、
 `uv run ruff check .` / `ruff format --check .`、`uv run python -m research_assistant`、
 `docker build --platform linux/amd64 -t research-assistant:p1 .`、
 `uv run python scripts/validate_d_offline.py --case D-01|D-02|D-05`。
@@ -543,3 +543,14 @@ D 类离线算法验证使用与 §13.2 相同的隔离参数（`--network none 
 [D02P]: ../../赛题信息/research-experiments-20261020-source-v1/D-02/protocol.json
 [D05M]: ../../赛题信息/research-experiments-20261020-source-v1/D-05/method.md
 [D05P]: ../../赛题信息/research-experiments-20261020-source-v1/D-05/protocol.json
+
+
+## 15. 2026-10-24 平台反馈后的实现补充
+
+平台测试镜像已通过入口、协议与运行证据检查，评测 `eval-20261024-a7d0d221` 自动分 46.9/100。截图保存在 [平台反馈](references/2026-10-24-platform-feedback/README.md)。题级失败原因未公开，不能将本地复现直接称为平台根因证明。用户要求后续以正确率和得分优先，时间/Token 次之；仍须遵守 180 秒硬限。
+
+- B 的官方示例 materials 是明确文献范围描述 `本地论文文件夹内的 PDF`。只对 B 的该描述及根内实际目录枚举真实 PDF；每项仍校验授权根与符号链接。指定文件缺失、空数组、未知文字不触发全库回退。
+- 限时 PDF 提取用独立进程执行；整批时间耗尽时终止、回收当前解析。解析失败与超时状态保留，其他材料可继续使用。
+- C/E 修复稿必须重新满足 >=800 字符；网关失败/超时/短稿不能覆盖合法初稿。修复请求预留 5 秒落盘。E 同时比较内容与引文问题，补齐复现瓶颈、模拟观察和证伪实验的实质检查。
+- D 生成实际使用扣除 72 秒预留的 Deadline；自测 timeout 为整批额度，生产最多 12 秒。生成失败保留上一份完整源码。正式 helper 启动前，历史同题结果原样移动至 `work/<case>/previous-results/`，避免失败后误报旧成果。
+- 本地 D 自测仍是受限进程，不具备完整文件/网络隔离；正式实验继续通过平台隔离 helper。该已知限制不应被称为真正沙箱，后续隔离改造应独立验证，避免在当前平台已可执行的 D 链路中无证据地禁用自测。
