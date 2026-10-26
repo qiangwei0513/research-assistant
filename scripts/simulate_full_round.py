@@ -160,7 +160,9 @@ PAPER_NAMES = [str(spec["filename"]) for spec in PAPER_SPECS]
 def build_task(case_id: str, function: str) -> dict[str, Any]:
     spec = INPUTS[case_id]
     materials: list[str] = []
-    if function in ("Literature_Retrieval", "Survey", "Idea"):
+    if function == "Literature_Retrieval":
+        materials = ["本地论文文件夹内的 PDF"]
+    elif function in ("Survey", "Idea"):
         materials = [*PAPER_NAMES, SCANNED_FILENAME]
     return {
         "case_id": case_id,

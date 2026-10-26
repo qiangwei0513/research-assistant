@@ -175,6 +175,12 @@ def check_case(
             problems.append("path 指向的 Markdown 不存在")
         elif target.read_text(encoding="utf-8") != markdown:
             problems.append("Markdown 文件与响应不一致")
+    if function is TaskFunction.LITERATURE_RETRIEVAL:
+        papers = body.get("papers", [])
+        if task["case_id"] in ("B-01", "B-02") and not papers:
+            problems.append("自建库含相关论文，但返回空结果；须检查材料范围/检索路径")
+        if task["case_id"] == "B-03" and papers:
+            problems.append("自建无相关文献题返回了误检结果")
     if function is TaskFunction.REPRODUCTION:
         if body.get("status") != "materials_missing":
             problems.append(f"D 状态 {body.get('status')!r}，期望 materials_missing")

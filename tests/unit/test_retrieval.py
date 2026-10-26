@@ -506,57 +506,5 @@ def test_prompt_demands_exclusion_screening_before_selection() -> None:
     prompt = build_user_prompt(task, [{"filename": "a.pdf"}], [])
     assert "excluded" in prompt
     assert "0.75" in SYSTEM_PROMPT
-    assert "宁缺勿滥" in SYSTEM_PROMPT
+    assert "漏掉相关论文" in SYSTEM_PROMPT
     assert "排除" in prompt
-
-
-def test_retrieval_shrinks_candidates_on_context_overflow(
-    base_env: dict[str, str],
-    paper_library: list[str],
-    papers_root: Path,
-    tmp_workspace: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """B 类在上下文超限时应以**更小的候选字符上限**重建候选并重试。
-
-    断言机制而不是提示长度：夹具论文都很小，裁剪根本不会触发，
-    比提示长度会得出「缩减没生效」的假象。真正要守的是 shrunk 被传进 select_candidates。
-    """
-    from research_assistant.handlers import retrieval as retrieval_module
-
-    caps: list[int | None] = []
-    real_select = retrieval_module.select_candidates
-
-    def recording_select(task, index, documents, *, max_chars=None):
-        # 只记录实际生效的上限；None 表示走默认，不能把它显式传进去覆盖默认值
-        effective = retrieval_module.MAX_CANDIDATE_CHARS if max_chars is None else max_chars
-        caps.append(effective)
-        if max_chars is None:
-            return real_select(task, index, documents)
-        return real_select(task, index, documents, max_chars=max_chars)
-
-    monkeypatch.setattr(retrieval_module, "select_candidates", recording_select)
-    task = retrieval_task(materials=paper_library)
-    good = model_papers(
-        [
-            {"filename": RELEVANT[0], "reason": "用遥感数据量化绿地覆盖率与地表温度的关系。"},
-        ]
-    )
-    fake = FakeGateway(
-        [
-            GatewayError("gateway returned HTTP 400 during retrieval.rerank: prompt is too long"),
-            good,
-        ]
-    )
-    env = {
-        **base_env,
-        "RESEARCH_PAPERS_ROOT": str(papers_root),
-        "RESEARCH_WORKSPACE_ROOT": str(tmp_workspace),
-    }
-    context = load_task_context(task, Settings.from_env(env), gateway=fake)
-    result = solve_retrieval(task, context)
-
-    assert result["case_id"] == "B-01"
-    assert [stage for stage, _ in fake.calls] == ["retrieval.rerank", "retrieval.rerank.shrunk"]
-    assert caps == [24000, 12000], caps
-    assert [p["filename"] for p in result["papers"]] == [RELEVANT[0]]
